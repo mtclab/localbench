@@ -78,14 +78,37 @@ await page.screenshot({ path: `${OUT}/3-theme.png` });
 // 4) provable-local: no external requests happened during the whole flow
 check(external.length === 0, `zero external network requests (found ${external.length}${external.length ? ": " + external.join(", ") : ""})`);
 
-// 5) offline PWA: wait for SW to control, go offline, reload, still works
+// 5) offline PWA: wait for the SW to actually CONTROL the page (not just be
+// registered) so the precache is populated, then go offline, reload, still works.
 await page.evaluate(async () => {
   if (!("serviceWorker" in navigator)) return;
   await navigator.serviceWorker.ready;
+  // controller is null until the SW claims/controls this client
+  if (navigator.serviceWorker.controller) return;
+  await new Promise((resolve) => {
+    navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+    setTimeout(resolve, 5000);
+  });
 });
-await page.waitForTimeout(1500); // let precache settle
+await page.waitForTimeout(1000); // let cache.addAll settle
+const diag = await page.evaluate(async () => {
+  const controller = !!navigator.serviceWorker.controller;
+  const keys = await caches.keys();
+  const urls = [];
+  for (const k of keys) {
+    const c = await caches.open(k);
+    urls.push(...(await c.keys()).map((r) => new URL(r.url).pathname));
+  }
+  return { controller, cacheKeys: keys, cached: urls.sort() };
+});
+console.log(`  [diag] controller=${diag.controller} caches=${JSON.stringify(diag.cacheKeys)}`);
+console.log(`  [diag] cached=${JSON.stringify(diag.cached)}`);
+const failedReqs = [];
+page.on("requestfailed", (r) => failedReqs.push(`${r.url()} (${r.failure()?.errorText})`));
 await context.setOffline(true);
 await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+await page.waitForTimeout(1500);
+if (failedReqs.length) console.log(`  [diag] offline failed reqs:\n    ${failedReqs.join("\n    ")}`);
 const offlineVersion = await page.textContent("#core-version").catch(() => "");
 check(/^v\d+\.\d+\.\d+/.test(offlineVersion ?? ""), `offline reload still boots WASM (got "${offlineVersion}")`);
 await page.screenshot({ path: `${OUT}/4-offline.png` });

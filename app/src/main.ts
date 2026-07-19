@@ -50,7 +50,16 @@ worker.addEventListener("error", () => {
 function countPages(bytes: ArrayBuffer): Promise<number> {
   const id = nextRequestId++;
   return new Promise<number>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    // Safety net: if the worker ever dies without firing "error" (e.g. a future
+    // op panics and aborts the wasm instance), don't leave the UI hanging.
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error("Processing timed out."));
+    }, 30_000);
+    pending.set(id, {
+      resolve: (pages) => { clearTimeout(timer); resolve(pages); },
+      reject: (reason) => { clearTimeout(timer); reject(reason); },
+    });
     worker.postMessage({ id, type: "page-count", bytes } satisfies WorkerRequest, [bytes]);
   });
 }

@@ -10,6 +10,30 @@ try {
   process.exit(1);
 }
 
+// Benign URLs that are identifiers, not network fetches (XML/SVG namespaces).
+// Anything not on this list is treated as a potential exfiltration endpoint.
+const ALLOWED_URLS = [
+  "http://www.w3.org/2000/svg",
+  "http://www.w3.org/1999/xlink",
+  "http://www.w3.org/XML/1998/namespace",
+  "http://www.w3.org/1999/xhtml",
+];
+
+function isAllowed(url) {
+  return ALLOWED_URLS.some((allowed) => url === allowed || url.startsWith(allowed));
+}
+
+// Known-benign URL strings baked into the WASM by dependencies (crate repo links
+// in error/panic messages). These are inert data, not fetch endpoints — WASM
+// cannot initiate a request without a JS bridge, and CSP connect-src 'self'
+// would block one anyway. Listed explicitly so a genuinely UNexpected URL still
+// fails. Add a crate's URL here only after confirming it is inert metadata.
+const WASM_ALLOWED_URLS = ["https://github.com/J-F-Liu/lopdf/"];
+
+function isWasmAllowed(url) {
+  return isAllowed(url) || WASM_ALLOWED_URLS.some((allowed) => url.startsWith(allowed));
+}
+
 async function filesBelow(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(
@@ -21,28 +45,57 @@ async function filesBelow(directory) {
   return nested.flat();
 }
 
-const scannable = new Set([".css", ".html", ".js", ".mjs"]);
-const files = (await filesBelow(distDirectory)).filter(
+// Any text asset a browser parses can carry a URL: scripts, styles, markup,
+// the manifest, SVGs, JSON, and the CF _headers file. Scan them all.
+const scannable = new Set([".css", ".html", ".js", ".mjs", ".json", ".svg", ".webmanifest"]);
+const allFiles = await filesBelow(distDirectory);
+const textFiles = allFiles.filter(
   (file) => scannable.has(path.extname(file)) || path.basename(file) === "_headers",
 );
+const wasmFiles = allFiles.filter((file) => path.extname(file) === ".wasm");
+
 const failures = [];
 let cspCount = 0;
 
-for (const file of files) {
+// Matches absolute (http://, https://) AND protocol-relative (//host.tld) URLs.
+const urlPattern = /(?:https?:)?\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`<>)]*/gi;
+
+for (const file of textFiles) {
   const relative = path.relative(distDirectory, file);
   const contents = await readFile(file, "utf8");
-  const externalOrigins = contents.match(/https?:\/\/[^\s"'`<>)]+/gi) ?? [];
-  for (const origin of externalOrigins) {
-    failures.push(`${relative}: external URL is forbidden: ${origin}`);
+
+  for (const raw of contents.match(urlPattern) ?? []) {
+    // Normalize protocol-relative to both http/https for allowlist comparison.
+    const httpsForm = raw.startsWith("//") ? `https:${raw}` : raw;
+    const httpForm = raw.startsWith("//") ? `http:${raw}` : raw;
+    if (isAllowed(raw) || isAllowed(httpsForm) || isAllowed(httpForm)) continue;
+    failures.push(`${relative}: external URL is forbidden: ${raw}`);
   }
 
-  const connectDirectives = contents.match(/connect-src\s+[^;"<]+/gi) ?? [];
-  for (const directive of connectDirectives) {
+  for (const directive of contents.match(/connect-src\s+[^;"<]+/gi) ?? []) {
     cspCount += 1;
     const sources = directive.trim().split(/\s+/).slice(1);
     if (sources.length !== 1 || sources[0] !== "'self'") {
       failures.push(`${relative}: CSP must be exactly connect-src 'self' (found: ${directive})`);
     }
+  }
+
+  // worker-src, when present, must also be locked to 'self' (workers can fetch).
+  for (const directive of contents.match(/worker-src\s+[^;"<]+/gi) ?? []) {
+    const sources = directive.trim().split(/\s+/).slice(1);
+    if (!sources.every((s) => s === "'self'")) {
+      failures.push(`${relative}: worker-src must be 'self' only (found: ${directive})`);
+    }
+  }
+}
+
+// Scan WASM binaries for hard-coded external URL strings (supply-chain guard).
+for (const file of wasmFiles) {
+  const relative = path.relative(distDirectory, file);
+  const ascii = await readFile(file, "latin1");
+  for (const raw of ascii.match(/https?:\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`<>)\x00]*/gi) ?? []) {
+    if (isWasmAllowed(raw)) continue;
+    failures.push(`${relative}: WASM embeds an unexpected external URL: ${raw}`);
   }
 }
 
@@ -50,7 +103,6 @@ if (cspCount < 2) {
   failures.push("Expected connect-src CSP directives in both _headers and the HTML meta fallback.");
 }
 
-const wasmFiles = (await filesBelow(distDirectory)).filter((file) => path.extname(file) === ".wasm");
 if (wasmFiles.length === 0) failures.push("No WASM asset was emitted into dist/.");
 
 const swPath = path.join(distDirectory, "sw.js");
@@ -71,5 +123,6 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`Provable-local check passed: ${files.length} text assets, ${wasmFiles.length} WASM asset, CSP locked to self.`);
-
+console.log(
+  `Provable-local check passed: ${textFiles.length} text assets + ${wasmFiles.length} WASM scanned, CSP locked to self.`,
+);
