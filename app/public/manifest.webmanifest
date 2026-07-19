@@ -1,11 +1,16 @@
 {
-  "name": "localbench — private file tools",
+  "id": "/",
+  "name": "localbench — Private PDF Tools",
   "short_name": "localbench",
-  "description": "Private file tools that run entirely on your device.",
+  "description": "Count, merge, organize, and compress PDFs privately on your device.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "categories": ["utilities", "productivity"],
   "background_color": "#f5f7fb",
   "theme_color": "#1458d4",
+  "lang": "en",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icons/icon-192.png",
@@ -21,4 +26,3 @@
     }
   ]
 }
-

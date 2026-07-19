@@ -17,6 +17,7 @@ const ALLOWED_URLS = [
   "http://www.w3.org/1999/xlink",
   "http://www.w3.org/XML/1998/namespace",
   "http://www.w3.org/1999/xhtml",
+  "http://www.sitemaps.org/schemas/sitemap/0.9",
 ];
 
 function isAllowed(url) {
@@ -34,6 +35,52 @@ function isWasmAllowed(url) {
   return isAllowed(url) || WASM_ALLOWED_URLS.some((allowed) => url.startsWith(allowed));
 }
 
+// These URLs appear only in non-fetching document contexts: canonical/social
+// metadata, JSON-LD data, a user-activated source link, and crawler discovery
+// files. Mask the exact approved occurrences before URL scanning. Keeping this
+// structural (instead of globally allowlisting the origins) means the same URL
+// would still fail if it appeared in JS, CSS, img/src, script/src, or style/link.
+function maskExpectedInertUrls(relative, contents) {
+  if (relative === "index.html") {
+    return contents
+      .replace(
+        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/localbench\.pages\.dev\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://localbench.pages.dev/", ""),
+      )
+      .replace(
+        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/localbench\.pages\.dev\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://localbench.pages.dev/", ""),
+      )
+      .replace(
+        /<a\b(?=[^>]*\bhref=["']https:\/\/github\.com\/mtclab\/localbench["'])[^>]*>/gi,
+        (tag) => tag.replace("https://github.com/mtclab/localbench", ""),
+      )
+      .replace(
+        /<script\b[^>]*\btype=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi,
+        (block) =>
+          block
+            .replace("https://schema.org", "")
+            .replace("https://localbench.pages.dev/", ""),
+      );
+  }
+
+  if (relative === "sitemap.xml") {
+    return contents.replace(
+      /<loc>https:\/\/localbench\.pages\.dev\/<\/loc>/gi,
+      "<loc></loc>",
+    );
+  }
+
+  if (relative === "robots.txt") {
+    return contents.replace(
+      /^Sitemap:\s+https:\/\/localbench\.pages\.dev\/sitemap\.xml\s*$/gim,
+      "Sitemap:",
+    );
+  }
+
+  return contents;
+}
+
 async function filesBelow(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(
@@ -47,7 +94,17 @@ async function filesBelow(directory) {
 
 // Any text asset a browser parses can carry a URL: scripts, styles, markup,
 // the manifest, SVGs, JSON, and the CF _headers file. Scan them all.
-const scannable = new Set([".css", ".html", ".js", ".mjs", ".json", ".svg", ".webmanifest"]);
+const scannable = new Set([
+  ".css",
+  ".html",
+  ".js",
+  ".mjs",
+  ".json",
+  ".svg",
+  ".webmanifest",
+  ".xml",
+  ".txt",
+]);
 const allFiles = await filesBelow(distDirectory);
 const textFiles = allFiles.filter(
   (file) => scannable.has(path.extname(file)) || path.basename(file) === "_headers",
@@ -63,8 +120,9 @@ const urlPattern = /(?:https?:)?\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`<>)]*/gi;
 for (const file of textFiles) {
   const relative = path.relative(distDirectory, file);
   const contents = await readFile(file, "utf8");
+  const urlScanContents = maskExpectedInertUrls(relative, contents);
 
-  for (const raw of contents.match(urlPattern) ?? []) {
+  for (const raw of urlScanContents.match(urlPattern) ?? []) {
     // Normalize protocol-relative to both http/https for allowlist comparison.
     const httpsForm = raw.startsWith("//") ? `https:${raw}` : raw;
     const httpForm = raw.startsWith("//") ? `http:${raw}` : raw;

@@ -10,38 +10,150 @@
     <meta name="theme-color" content="#f5f7fb" />
     <meta
       name="description"
-      content="Private, client-side PDF tools. Your files never leave your device."
+      content="Count, merge, organize, and compress PDFs privately in your browser. No uploads, accounts, or tracking."
+    />
+    <link rel="canonical" href="https://localbench.pages.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="localbench" />
+    <meta property="og:title" content="Count PDF Pages — localbench" />
+    <meta
+      property="og:description"
+      content="Private PDF tools that run entirely in your browser. Your files never leave your device."
+    />
+    <meta property="og:url" content="https://localbench.pages.dev/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Count PDF Pages — localbench" />
+    <meta
+      name="twitter:description"
+      content="Private PDF tools that run entirely in your browser. Your files never leave your device."
     />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <title>localbench — private file tools</title>
+    <title>Count PDF Pages — localbench</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "localbench",
+        "url": "https://localbench.pages.dev/",
+        "description": "Private PDF tools that count, merge, organize, and compress files entirely in the browser.",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with WebAssembly support",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/" aria-label="localbench home">
-        <span class="brand-mark" aria-hidden="true">lb</span>
-        <span>localbench</span>
-      </a>
-      <nav aria-label="Tools">
+      <div class="brand-cluster">
+        <a class="brand" href="/#page-count" aria-label="localbench home">
+          <span class="brand-mark" aria-hidden="true">lb</span>
+          <span>localbench</span>
+        </a>
+        <button
+          class="local-badge"
+          id="local-badge"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="local-inspector"
+          aria-label="Open verified local privacy inspector"
+        >
+          <span aria-hidden="true">🔒</span>
+          <span>Verified local</span>
+        </button>
+      </div>
+      <nav class="tool-navigation" aria-label="PDF tools">
         <span class="nav-label">Tools</span>
-        <button class="nav-tool" type="button" data-tool="page-count" aria-current="page">
-          PDF page count
-        </button>
-        <button class="nav-tool" type="button" data-tool="merge">
-          Merge PDFs
-        </button>
-        <button class="nav-tool" type="button" data-tool="organize">
-          Organize pages
-        </button>
-        <button class="nav-tool" type="button" data-tool="compress">
-          Compress PDF
-        </button>
+        <div class="tool-switcher" role="group" aria-label="Choose a PDF tool">
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="page-count"
+            aria-current="page"
+            aria-controls="page-count-panel"
+            tabindex="0"
+          >
+            PDF page count
+          </button>
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="merge"
+            aria-controls="merge-panel"
+            tabindex="-1"
+          >
+            Merge PDFs
+          </button>
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="organize"
+            aria-controls="organize-panel"
+            tabindex="-1"
+          >
+            Organize pages
+          </button>
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="compress"
+            aria-controls="compress-panel"
+            tabindex="-1"
+          >
+            Compress PDF
+          </button>
+        </div>
       </nav>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
         <span aria-hidden="true" id="theme-icon">◐</span>
         <span id="theme-label">Theme</span>
       </button>
     </header>
+
+    <dialog
+      class="local-inspector"
+      id="local-inspector"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-inspector-title"
+      aria-describedby="local-inspector-description"
+    >
+      <div class="inspector-content">
+        <div class="inspector-header">
+          <div>
+            <p class="card-kicker">Live privacy proof</p>
+            <h2 id="local-inspector-title">Verified local</h2>
+          </div>
+          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close privacy inspector">×</button>
+        </div>
+        <p id="local-inspector-description">
+          These checks come from this browser session, not from a server claim.
+        </p>
+        <dl class="proof-list">
+          <div>
+            <dt>External requests since load</dt>
+            <dd id="external-request-count">0</dd>
+          </div>
+          <div class="proof-code-row">
+            <dt>Active connection policy</dt>
+            <dd><code id="csp-connect-src">connect-src 'self'</code></dd>
+          </div>
+          <div>
+            <dt>Offline page control</dt>
+            <dd id="offline-control-status">Checking…</dd>
+          </div>
+        </dl>
+        <p class="proof-explanation">
+          <code>connect-src 'self'</code> allows app connections only to this static origin, blocking uploads to external services.
+        </p>
+        <a class="source-link" href="https://github.com/mtclab/localbench">Read the source <span aria-hidden="true">↗</span></a>
+      </div>
+    </dialog>
 
     <main>
       <section class="hero tool-panel" id="page-count-panel" data-tool-panel="page-count" aria-labelledby="page-count-title">
