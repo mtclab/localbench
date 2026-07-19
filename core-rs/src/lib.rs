@@ -173,6 +173,167 @@ fn merge(mut docs: Vec<Vec<u8>>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Pure core: keep source pages in the requested output order, adding a
+/// clockwise rotation to each one, and return the serialized PDF.
+fn organize(bytes: &[u8], pages: Vec<u32>, rotations: Vec<i32>) -> Result<Vec<u8>, String> {
+    if pages.is_empty() {
+        return Err("Choose at least one page for the output PDF.".to_owned());
+    }
+    if pages.len() != rotations.len() {
+        return Err("Every output page must have one rotation value.".to_owned());
+    }
+    for (index, rotation) in rotations.iter().enumerate() {
+        if !matches!(rotation, 0 | 90 | 180 | 270) {
+            return Err(format!(
+                "Rotation for output page {} must be 0, 90, 180, or 270 degrees.",
+                index + 1
+            ));
+        }
+    }
+
+    let mut source = load_pdf(bytes)?;
+    let source_page_count = u32::try_from(source.get_pages().len())
+        .map_err(|_| "This PDF has too many pages to organize.".to_owned())?;
+    if source_page_count == 0 {
+        return Err("This PDF has no pages to organize.".to_owned());
+    }
+    for page_number in &pages {
+        if !(1..=source_page_count).contains(page_number) {
+            return Err(format!(
+                "Page {page_number} is outside this PDF's page range (1–{source_page_count})."
+            ));
+        }
+    }
+
+    let output_version = source.version.as_str().max("1.5").to_owned();
+    let mut output = lopdf::Document::with_version(output_version);
+    let pages_id = output.new_object_id();
+    let catalog_id = output.new_object_id();
+    let first_source_id = output
+        .max_id
+        .checked_add(1)
+        .ok_or_else(|| "This PDF contains too many objects to organize.".to_owned())?;
+
+    // Move every source object into a range above the two new root objects.
+    // lopdf updates references, including those inside page resources/streams.
+    source.renumber_objects_with(first_source_id);
+    let source_pages = source.get_pages();
+    let selected_source_ids = pages
+        .iter()
+        .map(|page_number| {
+            source_pages
+                .get(page_number)
+                .copied()
+                .ok_or_else(|| format!("Could not find page {page_number} in this PDF."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Once a page is attached to the new flat page tree it loses its old Pages
+    // ancestors. Preserve all attributes that the PDF spec allows it to inherit.
+    let unique_source_ids = selected_source_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    for page_id in &unique_source_ids {
+        let inherited = [b"Resources".as_slice(), b"MediaBox", b"CropBox", b"Rotate"]
+            .into_iter()
+            .filter_map(|key| {
+                inherited_page_attribute(&source, *page_id, key).map(|value| (key.to_vec(), value))
+            })
+            .collect::<Vec<_>>();
+        let page = source
+            .get_object_mut(*page_id)
+            .and_then(lopdf::Object::as_dict_mut)
+            .map_err(|error| format!("Could not read a PDF page: {error}"))?;
+        for (key, value) in inherited {
+            if !page.has(&key) {
+                page.set(key, value);
+            }
+        }
+    }
+
+    let mut next_object_id = source
+        .max_id
+        .checked_add(1)
+        .ok_or_else(|| "This PDF contains too many objects to organize.".to_owned())?;
+    let mut used_source_ids = std::collections::HashSet::new();
+    let mut output_page_ids = Vec::with_capacity(pages.len());
+    let mut output_pages = Vec::with_capacity(pages.len());
+
+    for (source_page_id, added_rotation) in selected_source_ids.into_iter().zip(rotations) {
+        let mut page = source
+            .get_dictionary(source_page_id)
+            .map_err(|error| format!("Could not read a PDF page: {error}"))?
+            .clone();
+        let existing_rotation = match page.get(b"Rotate") {
+            Ok(value) => value
+                .as_i64()
+                .map_err(|_| "A page has an invalid existing rotation value.".to_owned())?,
+            Err(_) => 0,
+        };
+        let rotation = existing_rotation
+            .checked_add(i64::from(added_rotation))
+            .ok_or_else(|| "A page rotation value is too large.".to_owned())?
+            .rem_euclid(360);
+        page.set("Parent", pages_id);
+        page.set("Rotate", rotation);
+
+        // Reuse a selected leaf the first time. A repeated page gets a fresh
+        // leaf ID while continuing to share immutable content/resources.
+        let output_page_id = if used_source_ids.insert(source_page_id) {
+            source_page_id
+        } else {
+            let duplicate_id = (next_object_id, 0);
+            next_object_id = next_object_id
+                .checked_add(1)
+                .ok_or_else(|| "This PDF contains too many objects to organize.".to_owned())?;
+            duplicate_id
+        };
+        output_page_ids.push(output_page_id);
+        output_pages.push((output_page_id, lopdf::Object::Dictionary(page)));
+    }
+
+    // Start with the source object graph so shared resource references remain
+    // intact, replace the selected leaves, then prune everything unreachable
+    // from the new catalog (including omitted pages and the old page tree).
+    for (object_id, object) in std::mem::take(&mut source.objects) {
+        let is_old_root = matches!(object.type_name(), Ok(b"Catalog" | b"Pages"));
+        if !is_old_root {
+            output.objects.insert(object_id, object);
+        }
+    }
+    for (page_id, page) in output_pages {
+        output.objects.insert(page_id, page);
+    }
+
+    let page_count = i64::try_from(output_page_ids.len())
+        .map_err(|_| "This PDF has too many output pages.".to_owned())?;
+    output.objects.insert(
+        pages_id,
+        lopdf::Object::Dictionary(lopdf::dictionary! {
+            "Type" => "Pages",
+            "Kids" => output_page_ids.into_iter().map(lopdf::Object::Reference).collect::<Vec<_>>(),
+            "Count" => page_count,
+        }),
+    );
+    output.objects.insert(
+        catalog_id,
+        lopdf::Object::Dictionary(lopdf::dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        }),
+    );
+    output.max_id = next_object_id - 1;
+    output.trailer.set("Root", catalog_id);
+    output.prune_objects();
+
+    let mut organized = Vec::new();
+    output
+        .save_to(&mut organized)
+        .map_err(|error| format!("Could not create the organized PDF: {error}"))?;
+    Ok(organized)
+}
+
 /// Parse a PDF from memory and return its number of pages.
 #[wasm_bindgen]
 pub fn pdf_page_count(bytes: &[u8]) -> Result<u32, JsValue> {
@@ -189,27 +350,43 @@ pub fn merge_pdfs(docs: js_sys::Array) -> Result<Vec<u8>, JsValue> {
     merge(docs).map_err(|error| JsValue::from_str(&error))
 }
 
+/// Keep pages in the requested order, adding the parallel rotation values.
+#[wasm_bindgen]
+pub fn organize_pdf(
+    bytes: &[u8],
+    pages: Vec<u32>,
+    rotations: Vec<i32>,
+) -> Result<Vec<u8>, JsValue> {
+    organize(bytes, pages, rotations).map_err(|error| JsValue::from_str(&error))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{merge, page_count, ENCRYPTED_PDF_ERROR};
+    use super::{merge, organize, page_count, ENCRYPTED_PDF_ERROR};
     use lopdf::{dictionary, Document, Object};
 
-    fn one_page_pdf() -> Vec<u8> {
+    fn multi_page_pdf(page_count: u32) -> Vec<u8> {
         let mut document = Document::with_version("1.5");
         let pages_id = document.new_object_id();
-        let page_id = document.add_object(dictionary! {
-            "Type" => "Page",
-            "Parent" => pages_id,
-            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
-            "Resources" => dictionary! {},
-        });
+        let page_ids = (1..=page_count)
+            .map(|page_number| {
+                document.add_object(dictionary! {
+                    "Type" => "Page",
+                    "Parent" => pages_id,
+                    "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+                    "Resources" => dictionary! {},
+                    "LocalbenchPageNumber" => page_number,
+                })
+            })
+            .collect::<Vec<_>>();
 
         document.objects.insert(
             pages_id,
             Object::Dictionary(dictionary! {
                 "Type" => "Pages",
-                "Kids" => vec![Object::Reference(page_id)],
-                "Count" => 1,
+                "Kids" => page_ids.into_iter().map(Object::Reference).collect::<Vec<_>>(),
+                "Count" => page_count,
+                "Rotate" => 90,
             }),
         );
         let catalog_id = document.add_object(dictionary! {
@@ -223,6 +400,10 @@ mod tests {
             .save_to(&mut bytes)
             .expect("in-memory PDF should serialize");
         bytes
+    }
+
+    fn one_page_pdf() -> Vec<u8> {
+        multi_page_pdf(1)
     }
 
     #[test]
@@ -253,7 +434,10 @@ mod tests {
 
         assert_eq!(page_count(&merged).expect("merged PDF should parse"), 2);
         let merged_document = Document::load_mem(&merged).expect("merged PDF should load");
-        let page_ids = merged_document.get_pages().into_values().collect::<Vec<_>>();
+        let page_ids = merged_document
+            .get_pages()
+            .into_values()
+            .collect::<Vec<_>>();
         assert_ne!(page_ids[0], page_ids[1], "source page IDs must not collide");
     }
 
@@ -274,5 +458,81 @@ mod tests {
         let error = merge(vec![one_page_pdf(), encrypted_bytes])
             .expect_err("encrypted input must be rejected");
         assert!(error.contains(ENCRYPTED_PDF_ERROR));
+    }
+
+    #[test]
+    fn extracts_pages_in_requested_order() {
+        let organized = organize(&multi_page_pdf(3), vec![3, 1], vec![0, 0])
+            .expect("selected pages should organize");
+
+        assert_eq!(page_count(&organized).expect("output PDF should parse"), 2);
+        let document = Document::load_mem(&organized).expect("output PDF should load");
+        let source_numbers = document
+            .get_pages()
+            .into_values()
+            .map(|page_id| {
+                document
+                    .get_dictionary(page_id)
+                    .and_then(|page| page.get(b"LocalbenchPageNumber"))
+                    .and_then(Object::as_i64)
+                    .expect("fixture page number should remain")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(source_numbers, vec![3, 1]);
+    }
+
+    #[test]
+    fn adds_rotation_to_an_inherited_page_rotation() {
+        let organized =
+            organize(&multi_page_pdf(3), vec![2], vec![90]).expect("page should rotate");
+        let document = Document::load_mem(&organized).expect("output PDF should load");
+        let page_id = document.get_pages()[&1];
+        let rotation = document
+            .get_dictionary(page_id)
+            .and_then(|page| page.get(b"Rotate"))
+            .and_then(Object::as_i64)
+            .expect("output page should have a rotation");
+        assert_eq!(rotation, 180);
+    }
+
+    #[test]
+    fn duplicates_a_selected_page_with_independent_rotations() {
+        let organized = organize(&multi_page_pdf(1), vec![1, 1], vec![0, 90])
+            .expect("a source page should be reusable");
+        let document = Document::load_mem(&organized).expect("output PDF should load");
+        let page_ids = document.get_pages().into_values().collect::<Vec<_>>();
+        let rotations = page_ids
+            .iter()
+            .map(|page_id| {
+                document
+                    .get_dictionary(*page_id)
+                    .and_then(|page| page.get(b"Rotate"))
+                    .and_then(Object::as_i64)
+                    .expect("output page should have a rotation")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(page_ids.len(), 2);
+        assert_ne!(page_ids[0], page_ids[1]);
+        assert_eq!(rotations, vec![90, 180]);
+    }
+
+    #[test]
+    fn rejects_an_out_of_range_page() {
+        assert!(organize(&multi_page_pdf(3), vec![4], vec![0]).is_err());
+    }
+
+    #[test]
+    fn rejects_mismatched_organize_arrays() {
+        assert!(organize(&multi_page_pdf(3), vec![1, 2], vec![0]).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unsupported_rotation() {
+        assert!(organize(&multi_page_pdf(3), vec![1], vec![45]).is_err());
+    }
+
+    #[test]
+    fn rejects_an_empty_organize_selection() {
+        assert!(organize(&multi_page_pdf(3), Vec::new(), Vec::new()).is_err());
     }
 }
