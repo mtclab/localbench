@@ -308,7 +308,8 @@ h1 {
   min-height: 165px;
 }
 
-.organize-drop-zone label {
+.organize-drop-zone label,
+.compress-drop-zone label {
   min-height: 150px;
 }
 
@@ -321,7 +322,8 @@ h1 {
   box-shadow: var(--shadow);
 }
 
-.organize-editor {
+.organize-editor,
+.compress-editor {
   margin-top: 18px;
   padding: 18px;
   border: 1px solid var(--line);
@@ -330,7 +332,8 @@ h1 {
   box-shadow: var(--shadow);
 }
 
-.organize-editor-header > div {
+.organize-editor-header > div,
+.compress-editor-header > div {
   min-width: 0;
 }
 
@@ -594,6 +597,121 @@ h1 {
   background: var(--accent-strong);
 }
 
+.quality-presets {
+  min-width: 0;
+  margin: 18px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  border: 0;
+}
+
+.quality-presets legend {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.quality-presets label {
+  position: relative;
+  min-width: 0;
+  padding: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.quality-presets label:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.quality-presets input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.quality-presets input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.quality-presets span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quality-presets strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.quality-presets small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.compress-scope {
+  margin: -7px 0 16px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.compress-output {
+  margin-top: 16px;
+}
+
+.compression-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+}
+
+.compression-stats div {
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 0;
+  border-left: 1px solid var(--line);
+}
+
+.compression-stats div:first-child {
+  border-left: 0;
+}
+
+.compression-stats dt,
+.compression-stats dd {
+  text-align: left;
+}
+
+.compression-stats dt {
+  font-size: 0.75rem;
+}
+
+.compression-stats dd {
+  color: var(--text);
+}
+
+.download-action {
+  width: 100%;
+  margin-top: 9px;
+}
+
 .trust-card {
   padding: 30px;
   border: 1px solid var(--line);
@@ -706,6 +824,10 @@ a:focus-visible {
   .page-list-tools {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .quality-presets {
+    grid-template-columns: 1fr;
   }
 }
 
