@@ -144,6 +144,37 @@ if (orgDl) {
   check(false, "organize produced a downloadable PDF");
 }
 
+// --- 3d) COMPRESS tool: load image-heavy PDF, compress Strong, verify real reduction ---
+await page.click('[data-tool="compress"]');
+check(await page.isVisible("#compress-panel"), "tool switcher shows compress panel");
+const photoBuf = await readFile(path.join(CORPUS, "photo.pdf"));
+await page.setInputFiles("#compress-file-input", { name: "photo.pdf", mimeType: "application/pdf", buffer: photoBuf });
+await page.waitForSelector("#compress-editor:not([hidden])", { timeout: 15000 }).catch(() => {});
+await page.check('input[name="compress-quality"][value="30"]'); // Strong
+await page.click("#compress-button");
+await page.waitForSelector("#compress-output:not([hidden])", { timeout: 30000 }).catch(() => {});
+const savedText = (await page.textContent("#compress-saved-percent").catch(() => "")) ?? "";
+const beforeText = await page.textContent("#compress-before-size").catch(() => "");
+const afterText = await page.textContent("#compress-after-size").catch(() => "");
+const savedPct = parseFloat(savedText.replace(/[^\d.]/g, ""));
+check(Number.isFinite(savedPct) && savedPct > 0, `compress Strong on 447KB photo PDF: ${beforeText} -> ${afterText}, saved ${savedText}`);
+// verify the compressed output is a valid 1-page PDF
+const [cmpDl] = await Promise.all([
+  page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+  page.click("#compress-download-button"),
+]);
+if (cmpDl) {
+  const cp = path.join(OUT, `${ENGINE}-compressed.pdf`);
+  await cmpDl.saveAs(cp);
+  const cbytes = await readFile(cp);
+  check(cbytes.length < photoBuf.length, `compressed file smaller (${cbytes.length} < ${photoBuf.length})`);
+  await page.click('[data-tool="page-count"]');
+  const cc = await feed("compressed.pdf", cbytes);
+  check(cc.state === "success" && (cc.text ?? "").startsWith("1 page"), `compressed PDF still valid -> "${cc.text}"`);
+} else {
+  check(false, "compress produced a downloadable PDF");
+}
+
 // --- 4) theme toggle ---
 const before = await page.getAttribute("html", "data-theme");
 await page.click("#theme-toggle");
