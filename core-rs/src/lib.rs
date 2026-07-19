@@ -13,6 +13,12 @@ fn page_count(bytes: &[u8]) -> Result<u32, String> {
     let document =
         lopdf::Document::load_mem(bytes).map_err(|error| format!("Could not read this PDF: {error}"))?;
 
+    // Encrypted PDFs have an unreadable page tree -> lopdf reports 0 pages, which
+    // would be a silently wrong answer. Detect it and say so honestly instead.
+    if document.trailer.get(b"Encrypt").is_ok() {
+        return Err("This PDF is password-protected, so its pages can't be read.".to_owned());
+    }
+
     u32::try_from(document.get_pages().len())
         .map_err(|_| "This PDF has too many pages to count.".to_owned())
 }
