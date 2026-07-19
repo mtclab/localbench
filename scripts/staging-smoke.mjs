@@ -175,6 +175,19 @@ if (cmpDl) {
   check(false, "compress produced a downloadable PDF");
 }
 
+// --- 3e) provable-local badge + inspector, and hash deep-link ---
+await page.click("#local-badge");
+check(await page.isVisible("#local-inspector"), "privacy inspector opens from the badge");
+const netCount = ((await page.textContent("#external-request-count").catch(() => "")) ?? "").trim();
+check(netCount === "0", `inspector external-request counter reads 0 (got "${netCount}")`);
+await page.screenshot({ path: `${OUT}/${ENGINE}-4-inspector.png` });
+await page.keyboard.press("Escape");
+check(!(await page.isVisible("#local-inspector")), "inspector closes on Escape");
+// deep-link: loading #organize directly should select the organize tool
+await page.goto(`${BASE}#organize`, { waitUntil: "domcontentloaded" });
+check((await page.isVisible("#organize-panel")) && !(await page.isVisible("#page-count-panel")), "deep-link #organize selects the organize tool");
+await page.goto(BASE, { waitUntil: "domcontentloaded" }); // back to a clean state
+
 // --- 4) theme toggle ---
 const before = await page.getAttribute("html", "data-theme");
 await page.click("#theme-toggle");
