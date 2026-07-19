@@ -1,0 +1,5 @@
+# getrandom 0.3 needs an explicit backend on wasm32-unknown-unknown (no OS entropy).
+# lopdf -> rand -> getrandom links it even though our deterministic core never calls it.
+# This selects the JS backend for the wasm target only; native builds are untouched.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

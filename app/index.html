@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta
+      name="description"
+      content="Private, client-side PDF tools. Your files never leave your device."
+    />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>localbench — private file tools</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="localbench home">
+        <span class="brand-mark" aria-hidden="true">lb</span>
+        <span>localbench</span>
+      </a>
+      <nav aria-label="Tools">
+        <span class="nav-label">Tools</span>
+        <span class="nav-current" aria-current="page">PDF page count</span>
+      </nav>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
+        <span aria-hidden="true" id="theme-icon">◐</span>
+        <span id="theme-label">Theme</span>
+      </button>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="page-title">Count PDF pages without uploading a thing.</h1>
+        <p class="lede">
+          Your file is processed by the localbench Rust core entirely in this browser.
+          It never leaves your device.
+        </p>
+
+        <div class="drop-zone" id="drop-zone">
+          <input id="file-input" type="file" accept="application/pdf,.pdf" />
+          <label for="file-input">
+            <span class="drop-icon" aria-hidden="true">↓</span>
+            <span class="drop-title">Drop a PDF here</span>
+            <span class="drop-detail">or choose a file from your device</span>
+          </label>
+        </div>
+
+        <div class="result" id="result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="result-text">Ready for a PDF</span>
+        </div>
+      </section>
+
+      <aside class="trust-card" aria-labelledby="trust-title">
+        <p class="card-kicker">Local-only guarantee</p>
+        <h2 id="trust-title">The browser blocks uploads.</h2>
+        <p>
+          A strict Content Security Policy permits connections only to this static origin.
+          Once cached, localbench works offline too.
+        </p>
+        <dl>
+          <div><dt>Core</dt><dd id="core-version">Loading…</dd></div>
+          <div><dt>Processing</dt><dd>On this device</dd></div>
+          <div><dt>Account</dt><dd>Not needed</dd></div>
+        </dl>
+      </aside>
+    </main>
+
+    <footer>
+      <p>No uploads. No tracking. Just local tools.</p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+

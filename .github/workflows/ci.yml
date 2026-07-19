@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "feat/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Test Rust core
+        working-directory: core-rs
+        run: cargo test
+
+      - name: Build Rust core for WASM
+        run: cargo build --target wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Generate web WASM package
+        run: wasm-pack build core-rs --target web --out-dir ../app/src/wasm
+
+      - name: Install web dependencies and build
+        working-directory: app
+        run: npm ci && npm run build
+
+      - name: Enforce provable-local boundary
+        run: node scripts/check-local.mjs
+

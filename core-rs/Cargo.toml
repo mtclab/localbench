@@ -1,0 +1,21 @@
+[package]
+name = "localbench_core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Deterministic, client-side document core for localbench"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lopdf = { version = "0.38.0", default-features = false }
+wasm-bindgen = "0.2.100"
+
+# lopdf pulls `rand` -> `getrandom` transitively (for its encryption support).
+# We never invoke randomness (page counting is deterministic), but getrandom must
+# still link on wasm32-unknown-unknown, which has no default entropy source.
+# Wire getrandom's JS backend for the wasm target only; native builds (cargo test)
+# are unaffected. Paired with .cargo/config.toml's getrandom_backend cfg flag.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
