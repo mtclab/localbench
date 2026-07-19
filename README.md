@@ -25,6 +25,6 @@ Concept + wedge analysis: [mtclab/ideas #9](https://github.com/mtclab/ideas/issu
 
 ## Stack
 
-Vite + TypeScript, WASM cores in Web Workers, PWA, hosted on Cloudflare Pages. Minimal dependencies by design (smaller = more auditable).
+Rust core compiled to WebAssembly (all file logic), driven by a thin vanilla-TypeScript shell. WASM runs in Web Workers; PWA for offline; hosted on Cloudflare Pages. Minimal dependencies by design (smaller = more auditable).
 
 Built by [MTC Lab](https://mtclab.net).

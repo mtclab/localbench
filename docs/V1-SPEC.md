@@ -31,20 +31,21 @@ The privacy claim must be verifiable, not just asserted:
 This CSP + offline + open-source triad is the moat. Guard it in CI (see below) - a regression that adds a `connect-src` is a P0.
 
 ## Architecture
-- **Static SPA**, no backend. Hosted on **CF Pages** (free, global, our stack).
-- **Vite + TypeScript**, minimal deps (fewer deps = more auditable = smaller attack surface for the privacy claim).
-- **Heavy work in Web Workers** so the UI never freezes on a big file; WASM cores loaded in-worker.
-- **PWA** (service worker, offline, installable).
+Same shape as the forge family: **a Rust core compiled to WASM, driven by a thin TS shell.** No server - "backend" = the compute core, running client-side in the browser via WASM. New engine logic lives in Rust (`core-rs`), never in ad-hoc JS. This is our standing pattern and it makes the provable-local claim tighter (one auditable, permissive, deterministic core).
+
+- **`core-rs`** - Rust crate holding all PDF logic (merge/split/page-ops/compress). Exposed to JS via `wasm-bindgen`, built with `wasm-pack` (or `wasm-bindgen` + `wasm-opt`). Pure computation, no I/O, no network - takes bytes in, returns bytes out. Unit-tested in Rust (`cargo test`), the primary correctness gate.
+- **Thin TS shell** - Vite + TypeScript, minimal deps. Owns only UI, file drag-drop, worker orchestration, download. No PDF logic in JS.
+- **Web Workers** - the WASM core runs in a worker so the UI never freezes on a big file; core loaded in-worker.
+- **PWA** - service worker, offline, installable.
+- **Static**, hosted on **CF Pages** (free, global, our stack).
 - Coherent shell (shared tokens/nav/theme, light+dark, AA) - QoL/UX standing rule. One home, tools slot into it; no dead-ends.
 
-### PDF engine choices (resolve in the codec spike - do not pre-commit)
-- **Merge / split / reorder / rotate / delete**: `pdf-lib` (pure JS, no wasm, mature) handles all of these client-side today. Low risk.
-- **Compress** is the hard part (real image re-encode/downsample). Candidates to spike:
-  - `mupdf.wasm` (Artifex, AGPL - license check REQUIRED before adopting; AGPL on a hosted app has obligations).
-  - `pdfium` wasm builds (BSD) - render/rasterize path.
-  - Manual path: parse with pdf-lib, extract images, re-encode via canvas/`@jsquash` (webp/mozjpeg wasm), rewrite. Most control, most work.
-  - Ghostscript.wasm (AGPL - same license flag).
-  - **Spike deliverable**: a compression path with an acceptable license (prefer permissive; AGPL only with owner sign-off), a size-reduction benchmark on a corpus of real PDFs, and a quality floor. This is the one genuine technical risk in V1.
+### Rust PDF crates (verify licenses at adoption; prefer permissive)
+- **Merge / split / reorder / rotate / delete**: `lopdf` (MIT, pure Rust, low-level PDF read/write) - handles all page-level ops. Low risk. Primary candidate.
+- **Compress** is the hard part (real image re-encode/downsample of embedded XObjects). Pure-Rust path preferred so it wasm-compiles clean and stays permissive:
+  - Parse/rewrite structure with `lopdf`; walk image XObjects; re-encode with pure-Rust codecs: `image` (MIT/Apache), `jpeg-encoder` (pure Rust, no C), `oxipng`, `zune-jpeg`. Downsample + quality knob.
+  - AVOID C-dependent crates that fight wasm (`mozjpeg`-sys, pdfium, mupdf/ghostscript = AGPL). If a permissive pure-Rust path can't hit the quality/size floor, escalate to owner before pulling anything AGPL or C-linked.
+  - **Spike deliverable (S3)**: a pure-Rust compression path that wasm-builds, a size-reduction benchmark on a corpus of real PDFs, and a visual quality floor. The one genuine technical risk in V1.
 
 ## Monetization (later, not V1)
 SEO scale -> Ko-fi + optional pro (batch/queue, desktop build). Ad-light. No money-handling in the tool (liability filter). V1 = free, no monetization surface.
@@ -59,14 +60,17 @@ SEO scale -> Ko-fi + optional pro (batch/queue, desktop build). Ad-light. No mon
 - **Provable-local guard**: a test/script that fails if the built bundle references any non-self origin, or if CSP `connect-src` widens. This protects the core promise mechanically.
 - Deploy: CF Pages (Git integration or wrangler). Decide in setup slice.
 
-## Build slices (proposed - for owner review, not started)
-- **S0 - scaffold**: Vite+TS+PWA skeleton, coherent shell (nav/theme/tokens), CSP `connect-src 'none'`, empty tool routes, CF Pages deploy of a "hello" page. Proves the provable-local frame first.
-- **S1 - merge**: drag-drop multi-PDF, reorder, merge, download. pdf-lib in a worker. First real tool end-to-end.
-- **S2 - split + page ops**: page-grid view, extract ranges, rotate/delete/reorder, export.
-- **S3 - compress (spike + build)**: resolve the codec/license question, ship compression with a benchmarked size/quality result.
+## Build slices (proposed - for owner review)
+- **S0 - scaffold**: Cargo workspace + `core-rs` crate skeleton (one trivial wasm-bindgen export) + wasm-pack build wired; Vite+TS+PWA shell that loads the wasm in a worker and shows the version; coherent shell (nav/theme/tokens, light+dark); CSP `connect-src 'none'`; provable-local guard workflow; CF Pages deploy of the stub. Proves the Rust->WASM pipeline + provable-local frame before any tool code.
+- **S1 - merge**: `core-rs` merge (lopdf) + drag-drop multi-PDF, reorder, download. First real tool end-to-end. Rust unit tests are the correctness gate.
+- **S2 - split + page ops**: `core-rs` split/rotate/delete/reorder + page-grid UI, extract ranges, export.
+- **S3 - compress (spike + build)**: resolve the pure-Rust codec path, ship compression with a benchmarked size/quality result.
 - **S4 - polish + launch**: offline/PWA hardening, provable-local badge + inspector, SEO (per-op landing pages), a11y AA pass, real-device walk.
 
-## Open questions for owner
-1. Compression license posture: hard-permissive-only, or AGPL acceptable for a compress core (we would owe source, which is fine since we are public - but AGPL is viral on any linked server code; V1 has none)?
-2. Framework: vanilla TS + tiny helpers, or a light framework (Preact/Solid)? Lean vanilla for auditability + bundle size.
-3. Deploy: CF Pages Git-integration (auto on push) vs wrangler manual. Public repo so Actions is free either way.
+## Decisions (locked 2026-07-19)
+- **Core**: Rust -> WASM (`core-rs`), same as forge_core. No server. (owner)
+- **Framework**: vanilla TS + tiny helpers - auditability + bundle size.
+- **Compression**: permissive pure-Rust codecs only; AGPL/C-linked cores need owner sign-off (escalate from S3 if the floor can't be met).
+- **Deploy**: CF Pages Git-integration (auto on push).
+- **Visibility**: public repo -> CI workflows allowed as needed (provable-local guard is the important one).
+- **Anchor**: PDF ops.
