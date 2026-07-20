@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://localbench.pages.dev/sitemap.xml
+Sitemap: https://pdf.keeplocal.tools/sitemap.xml
