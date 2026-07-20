@@ -33,6 +33,9 @@
         <button class="nav-tool" type="button" data-tool="organize">
           Organize pages
         </button>
+        <button class="nav-tool" type="button" data-tool="compress">
+          Compress PDF
+        </button>
       </nav>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
         <span aria-hidden="true" id="theme-icon">◐</span>
@@ -152,6 +155,74 @@
         <div class="result" id="organize-result" role="status" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span>
           <span id="organize-result-text">Choose a PDF to begin — it never leaves your device.</span>
+        </div>
+      </section>
+
+      <section class="hero tool-panel" id="compress-panel" data-tool-panel="compress" aria-labelledby="compress-title" hidden>
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="compress-title">Compress a PDF without uploading it.</h1>
+        <p class="lede">
+          Re-encode supported embedded images and remove optional metadata in the local Rust core.
+          The PDF stays on this device from start to finish.
+        </p>
+
+        <div class="drop-zone compress-drop-zone" id="compress-drop-zone">
+          <input id="compress-file-input" type="file" accept="application/pdf,.pdf" />
+          <label for="compress-file-input">
+            <span class="drop-icon" aria-hidden="true">⇣</span>
+            <span class="drop-title">Drop a PDF here</span>
+            <span class="drop-detail">or choose one file from your device</span>
+          </label>
+        </div>
+
+        <section class="compress-editor" id="compress-editor" aria-labelledby="compress-editor-title" hidden>
+          <div class="merge-queue-header compress-editor-header">
+            <div>
+              <h2 id="compress-editor-title">Compression settings</h2>
+              <span class="organize-source-name" id="compress-source-name"></span>
+            </div>
+            <span id="compress-source-size"></span>
+          </div>
+
+          <fieldset class="quality-presets" id="quality-presets">
+            <legend>Image quality</legend>
+            <label>
+              <input type="radio" name="compress-quality" value="30" />
+              <span><strong>Strong</strong><small>Smaller files, softer images</small></span>
+            </label>
+            <label>
+              <input type="radio" name="compress-quality" value="55" checked />
+              <span><strong>Balanced</strong><small>Good size and image quality</small></span>
+            </label>
+            <label>
+              <input type="radio" name="compress-quality" value="80" />
+              <span><strong>Light</strong><small>Higher image quality</small></span>
+            </label>
+          </fieldset>
+          <p class="compress-scope">
+            Baseline JPEG images are recompressed. JPEG 2000, fax, and other image formats are
+            preserved unchanged to protect compatibility.
+          </p>
+
+          <button class="primary-action" id="compress-button" type="button" disabled>
+            Compress PDF
+          </button>
+
+          <div class="compress-output" id="compress-output" hidden>
+            <dl class="compression-stats" aria-label="Compression result">
+              <div><dt>Before</dt><dd id="compress-before-size">—</dd></div>
+              <div><dt>After</dt><dd id="compress-after-size">—</dd></div>
+              <div><dt>Saved</dt><dd id="compress-saved-percent">—</dd></div>
+            </dl>
+            <button class="secondary-action download-action" id="compress-download-button" type="button">
+              Download compressed PDF
+            </button>
+          </div>
+        </section>
+
+        <div class="result" id="compress-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="compress-result-text">Choose a PDF to begin — it never leaves your device.</span>
         </div>
       </section>
 

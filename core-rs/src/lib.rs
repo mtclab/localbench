@@ -1,7 +1,14 @@
-use lopdf::dictionary;
+use jpeg_encoder::{ColorType, Encoder};
+use lopdf::{dictionary, Object};
 use wasm_bindgen::prelude::*;
+use zune_jpeg::{
+    zune_core::{colorspace::ColorSpace, options::DecoderOptions},
+    JpegDecoder,
+};
 
 const ENCRYPTED_PDF_ERROR: &str = "This PDF is password-protected, so its pages can't be read.";
+const MAX_REENCODED_DIMENSION: u16 = 4_096;
+const MAX_DECODED_PIXELS: usize = 64_000_000;
 
 /// Return the exact version of the compiled core.
 #[wasm_bindgen]
@@ -334,6 +341,243 @@ fn organize(bytes: &[u8], pages: Vec<u32>, rotations: Vec<i32>) -> Result<Vec<u8
     Ok(organized)
 }
 
+#[derive(Clone, Copy)]
+enum JpegColor {
+    Gray,
+    Rgb,
+}
+
+impl JpegColor {
+    fn components(self) -> usize {
+        match self {
+            Self::Gray => 1,
+            Self::Rgb => 3,
+        }
+    }
+
+    fn decoder_color_space(self) -> ColorSpace {
+        match self {
+            Self::Gray => ColorSpace::Luma,
+            Self::Rgb => ColorSpace::RGB,
+        }
+    }
+
+    fn encoder_color_type(self) -> ColorType {
+        match self {
+            Self::Gray => ColorType::Luma,
+            Self::Rgb => ColorType::Rgb,
+        }
+    }
+}
+
+/// Return whether the byte stream announces a baseline sequential DCT frame.
+/// Other JPEG modes can also use PDF's DCTDecode filter, but S3 deliberately
+/// leaves them untouched rather than changing a mode we have not qualified.
+fn is_baseline_jpeg(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return false;
+    }
+
+    let mut position = 2;
+    while position < bytes.len() {
+        if bytes[position] != 0xff {
+            return false;
+        }
+        while position < bytes.len() && bytes[position] == 0xff {
+            position += 1;
+        }
+        let Some(&marker) = bytes.get(position) else {
+            return false;
+        };
+        position += 1;
+
+        match marker {
+            0xc0 => return true,
+            // Any other start-of-frame mode is outside this spike's safe scope.
+            0xc1..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => return false,
+            0xd8 | 0xd9 | 0x01 | 0xd0..=0xd7 => continue,
+            0xda => return false,
+            _ => {}
+        }
+
+        let Some(length_bytes) = bytes.get(position..position + 2) else {
+            return false;
+        };
+        let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
+        if length < 2 {
+            return false;
+        }
+        let Some(next_position) = position.checked_add(length) else {
+            return false;
+        };
+        if next_position > bytes.len() {
+            return false;
+        }
+        position = next_position;
+    }
+
+    false
+}
+
+fn downsample_if_huge(
+    pixels: Vec<u8>,
+    width: u16,
+    height: u16,
+    components: usize,
+) -> Option<(Vec<u8>, u16, u16)> {
+    let longest = width.max(height);
+    if longest <= MAX_REENCODED_DIMENSION {
+        return Some((pixels, width, height));
+    }
+
+    let longest = u32::from(longest);
+    let new_width =
+        ((u32::from(width) * u32::from(MAX_REENCODED_DIMENSION)) / longest).max(1) as u16;
+    let new_height =
+        ((u32::from(height) * u32::from(MAX_REENCODED_DIMENSION)) / longest).max(1) as u16;
+    let output_length = usize::from(new_width)
+        .checked_mul(usize::from(new_height))?
+        .checked_mul(components)?;
+    let mut downsampled = vec![0; output_length];
+
+    // Nearest-neighbour resampling is deterministic, dependency-free, and only
+    // applies to unusually large embedded images. JPEG quantization handles the
+    // ordinary quality reduction without changing dimensions.
+    for output_y in 0..usize::from(new_height) {
+        let source_y = output_y * usize::from(height) / usize::from(new_height);
+        for output_x in 0..usize::from(new_width) {
+            let source_x = output_x * usize::from(width) / usize::from(new_width);
+            let source_start = (source_y * usize::from(width) + source_x) * components;
+            let output_start = (output_y * usize::from(new_width) + output_x) * components;
+            downsampled[output_start..output_start + components]
+                .copy_from_slice(&pixels[source_start..source_start + components]);
+        }
+    }
+
+    Some((downsampled, new_width, new_height))
+}
+
+/// Decode and re-encode one qualified PDF DCT image. Any unsupported or
+/// inconsistent image returns None so its original stream remains untouched.
+fn reencode_dct_image(stream: &lopdf::Stream, quality: u8) -> Option<(Vec<u8>, u16, u16)> {
+    if stream.dict.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"Image")
+        || stream.dict.get(b"Filter").and_then(Object::as_name).ok() != Some(b"DCTDecode")
+        || !is_baseline_jpeg(&stream.content)
+    {
+        return None;
+    }
+
+    let color = match stream
+        .dict
+        .get(b"ColorSpace")
+        .and_then(Object::as_name)
+        .ok()?
+    {
+        b"DeviceGray" => JpegColor::Gray,
+        b"DeviceRGB" => JpegColor::Rgb,
+        _ => return None,
+    };
+    if stream
+        .dict
+        .get(b"BitsPerComponent")
+        .and_then(Object::as_i64)
+        .ok()
+        != Some(8)
+    {
+        return None;
+    }
+
+    let declared_width =
+        u16::try_from(stream.dict.get(b"Width").and_then(Object::as_i64).ok()?).ok()?;
+    let declared_height =
+        u16::try_from(stream.dict.get(b"Height").and_then(Object::as_i64).ok()?).ok()?;
+    let pixel_count = usize::from(declared_width).checked_mul(usize::from(declared_height))?;
+    if declared_width == 0 || declared_height == 0 || pixel_count > MAX_DECODED_PIXELS {
+        return None;
+    }
+
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(color.decoder_color_space());
+    let mut decoder = JpegDecoder::new_with_options(stream.content.as_slice(), options);
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    if info.width != declared_width || info.height != declared_height {
+        return None;
+    }
+    let expected_length = pixel_count.checked_mul(color.components())?;
+    if pixels.len() != expected_length {
+        return None;
+    }
+
+    let (pixels, width, height) =
+        downsample_if_huge(pixels, info.width, info.height, color.components())?;
+    let mut encoded = Vec::new();
+    Encoder::new(&mut encoded, quality)
+        .encode(&pixels, width, height, color.encoder_color_type())
+        .ok()?;
+    Some((encoded, width, height))
+}
+
+/// Pure core: recompress qualified baseline-JPEG image XObjects, remove
+/// nonessential metadata, compress otherwise-unfiltered streams, and serialize.
+/// A no-growth fallback guarantees that a successful result is never larger.
+fn compress(bytes: &[u8], quality: u8) -> Result<Vec<u8>, String> {
+    let mut document = load_pdf(bytes)?;
+    let source_page_count = document.get_pages().len();
+    let quality = quality.clamp(1, 100);
+
+    for object in document.objects.values_mut() {
+        let Object::Stream(stream) = object else {
+            continue;
+        };
+        let Some((encoded, width, height)) = reencode_dct_image(stream, quality) else {
+            continue;
+        };
+        if encoded.len() >= stream.content.len() {
+            continue;
+        }
+
+        stream.set_content(encoded);
+        stream.dict.remove(b"DecodeParms");
+        stream.dict.set("Width", i64::from(width));
+        stream.dict.set("Height", i64::from(height));
+    }
+
+    // Metadata can appear on the catalog, pages, or other dictionaries. Info
+    // is optional document metadata, so removing its trailer reference is safe.
+    document.trailer.remove(b"Info");
+    document.trailer.remove(b"Metadata");
+    for object in document.objects.values_mut() {
+        match object {
+            Object::Dictionary(dictionary) => {
+                dictionary.remove(b"Metadata");
+            }
+            Object::Stream(stream) => {
+                stream.dict.remove(b"Metadata");
+            }
+            _ => {}
+        }
+    }
+
+    document.prune_objects();
+    document.compress();
+    let mut compressed = Vec::new();
+    document
+        .save_to(&mut compressed)
+        .map_err(|error| format!("Could not create the compressed PDF: {error}"))?;
+
+    // Re-parse before returning transformed bytes. If serialization changed the
+    // page tree or did not reduce total size, preserve the known-good input.
+    let valid_and_smaller = compressed.len() < bytes.len()
+        && load_pdf(&compressed)
+            .map(|output| output.get_pages().len() == source_page_count)
+            .unwrap_or(false);
+    Ok(if valid_and_smaller {
+        compressed
+    } else {
+        bytes.to_vec()
+    })
+}
+
 /// Parse a PDF from memory and return its number of pages.
 #[wasm_bindgen]
 pub fn pdf_page_count(bytes: &[u8]) -> Result<u32, JsValue> {
@@ -360,10 +604,20 @@ pub fn organize_pdf(
     organize(bytes, pages, rotations).map_err(|error| JsValue::from_str(&error))
 }
 
+/// Reduce a PDF's size using only qualified, local pure-Rust codecs.
+#[wasm_bindgen]
+pub fn compress_pdf(bytes: &[u8], quality: u8) -> Result<Vec<u8>, JsValue> {
+    compress(bytes, quality).map_err(|error| JsValue::from_str(&error))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{merge, organize, page_count, ENCRYPTED_PDF_ERROR};
-    use lopdf::{dictionary, Document, Object};
+    use super::{
+        compress, downsample_if_huge, merge, organize, page_count, ENCRYPTED_PDF_ERROR,
+        MAX_REENCODED_DIMENSION,
+    };
+    use jpeg_encoder::{ColorType, Encoder};
+    use lopdf::{dictionary, Document, Object, Stream};
 
     fn multi_page_pdf(page_count: u32) -> Vec<u8> {
         let mut document = Document::with_version("1.5");
@@ -404,6 +658,93 @@ mod tests {
 
     fn one_page_pdf() -> Vec<u8> {
         multi_page_pdf(1)
+    }
+
+    fn jpeg_image_pdf() -> (Vec<u8>, usize) {
+        const WIDTH: u16 = 640;
+        const HEIGHT: u16 = 480;
+        let mut pixels = Vec::with_capacity(usize::from(WIDTH) * usize::from(HEIGHT) * 3);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                // Fine deterministic detail makes the high-quality fixture a
+                // meaningful compression target without checking in a binary.
+                let noise = ((u32::from(x) * 73 + u32::from(y) * 151) % 251) as u8;
+                pixels.extend_from_slice(&[
+                    (x % 256) as u8 ^ noise,
+                    (y % 256) as u8 ^ noise.rotate_left(2),
+                    ((u32::from(x) + u32::from(y)) % 256) as u8 ^ noise.rotate_left(4),
+                ]);
+            }
+        }
+
+        let mut jpeg = Vec::new();
+        Encoder::new(&mut jpeg, 96)
+            .encode(&pixels, WIDTH, HEIGHT, ColorType::Rgb)
+            .expect("fixture JPEG should encode");
+        let original_jpeg_size = jpeg.len();
+
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let image_id = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => i64::from(WIDTH),
+                "Height" => i64::from(HEIGHT),
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+                "Filter" => "DCTDecode",
+            },
+            jpeg,
+        ));
+        let content_id = document.add_object(Stream::new(
+            dictionary! {},
+            format!("q\n{} 0 0 {} 0 0 cm\n/Im0 Do\nQ\n", WIDTH, HEIGHT).into_bytes(),
+        ));
+        let metadata_id = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Metadata",
+                "Subtype" => "XML",
+            },
+            vec![b'm'; 4_096],
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), i64::from(WIDTH).into(), i64::from(HEIGHT).into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! {
+                    "Im0" => image_id,
+                },
+            },
+            "Contents" => content_id,
+            "Metadata" => metadata_id,
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(page_id)],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+            "Metadata" => metadata_id,
+        });
+        let info_id = document.add_object(dictionary! {
+            "Creator" => Object::string_literal("localbench compression fixture"),
+            "Producer" => Object::string_literal("localbench tests"),
+        });
+        document.trailer.set("Root", catalog_id);
+        document.trailer.set("Info", info_id);
+
+        let mut bytes = Vec::new();
+        document
+            .save_to(&mut bytes)
+            .expect("JPEG fixture PDF should serialize");
+        (bytes, original_jpeg_size)
     }
 
     #[test]
@@ -534,5 +875,156 @@ mod tests {
     #[test]
     fn rejects_an_empty_organize_selection() {
         assert!(organize(&multi_page_pdf(3), Vec::new(), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn compresses_a_baseline_jpeg_without_changing_page_count() {
+        let (source, original_jpeg_size) = jpeg_image_pdf();
+        let compressed = compress(&source, 25).expect("fixture should compress");
+
+        eprintln!(
+            "baseline-JPEG fixture: {} bytes -> {} bytes",
+            source.len(),
+            compressed.len()
+        );
+        assert!(compressed.len() < source.len());
+        assert_eq!(page_count(&compressed).expect("output should parse"), 1);
+
+        let output = Document::load_mem(&compressed).expect("output PDF should load");
+        assert!(output.trailer.get(b"Info").is_err());
+        let output_image = output
+            .objects
+            .values()
+            .filter_map(|object| object.as_stream().ok())
+            .find(|stream| {
+                stream.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Image")
+            })
+            .expect("output image should remain");
+        assert!(output_image.content.len() < original_jpeg_size);
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"Filter")
+                .and_then(Object::as_name)
+                .expect("image filter should remain"),
+            b"DCTDecode"
+        );
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"Width")
+                .and_then(Object::as_i64)
+                .expect("image width should remain"),
+            640
+        );
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"Height")
+                .and_then(Object::as_i64)
+                .expect("image height should remain"),
+            480
+        );
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"ColorSpace")
+                .and_then(Object::as_name)
+                .expect("image color space should remain"),
+            b"DeviceRGB"
+        );
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"BitsPerComponent")
+                .and_then(Object::as_i64)
+                .expect("image bit depth should remain"),
+            8
+        );
+        assert!(output.objects.values().all(|object| match object {
+            Object::Dictionary(dictionary) => !dictionary.has(b"Metadata"),
+            Object::Stream(stream) => !stream.dict.has(b"Metadata"),
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn clamps_compression_quality_to_the_public_range() {
+        let (source, _) = jpeg_image_pdf();
+        assert_eq!(
+            compress(&source, 0).expect("quality zero should clamp"),
+            compress(&source, 1).expect("quality one should work")
+        );
+        assert_eq!(
+            compress(&source, 101).expect("quality 101 should clamp"),
+            compress(&source, 100).expect("quality 100 should work")
+        );
+    }
+
+    #[test]
+    fn a_no_image_pdf_stays_valid_and_never_grows() {
+        let source = multi_page_pdf(2);
+        let compressed = compress(&source, 30).expect("no-image PDF should still compress");
+
+        assert!(compressed.len() <= source.len());
+        assert_eq!(
+            page_count(&compressed).expect("output should remain valid"),
+            2
+        );
+    }
+
+    #[test]
+    fn leaves_jpeg_2000_image_streams_untouched() {
+        let (source, _) = jpeg_image_pdf();
+        let mut input = Document::load_mem(&source).expect("fixture should load");
+        let input_image = input
+            .objects
+            .values_mut()
+            .filter_map(|object| object.as_stream_mut().ok())
+            .find(|stream| {
+                stream.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Image")
+            })
+            .expect("fixture image should exist");
+        input_image.dict.set("Filter", "JPXDecode");
+        let original_content = input_image.content.clone();
+        let mut input_bytes = Vec::new();
+        input
+            .save_to(&mut input_bytes)
+            .expect("modified fixture should serialize");
+
+        let compressed = compress(&input_bytes, 20).expect("unsupported image should be preserved");
+        let output = Document::load_mem(&compressed).expect("output should load");
+        let output_image = output
+            .objects
+            .values()
+            .filter_map(|object| object.as_stream().ok())
+            .find(|stream| {
+                stream.dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Image")
+            })
+            .expect("unsupported image should remain");
+        assert_eq!(
+            output_image
+                .dict
+                .get(b"Filter")
+                .and_then(Object::as_name)
+                .expect("filter should remain"),
+            b"JPXDecode"
+        );
+        assert_eq!(output_image.content, original_content);
+    }
+
+    #[test]
+    fn downsamples_an_unusually_large_dimension() {
+        let width = MAX_REENCODED_DIMENSION + 1;
+        let pixels = vec![42; usize::from(width) * 2 * 3];
+        let (downsampled, output_width, output_height) =
+            downsample_if_huge(pixels, width, 2, 3).expect("image should downsample");
+
+        assert_eq!(output_width, MAX_REENCODED_DIMENSION);
+        assert_eq!(output_height, 1);
+        assert_eq!(
+            downsampled.len(),
+            usize::from(output_width) * usize::from(output_height) * 3
+        );
     }
 }

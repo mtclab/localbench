@@ -5,6 +5,7 @@ import "./style.css";
 type WorkerRequest =
   | { id: number; type: "page-count"; bytes: ArrayBuffer }
   | { id: number; type: "merge"; documents: ArrayBuffer[] }
+  | { id: number; type: "compress"; bytes: ArrayBuffer; quality: number }
   | {
       id: number;
       type: "organize";
@@ -119,6 +120,17 @@ async function organizeDocument(
   return result.bytes;
 }
 
+async function compressDocument(bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
+  const id = nextRequestId++;
+  const result = await runCoreRequest(
+    { id, type: "compress", bytes, quality },
+    [bytes],
+    120_000,
+  );
+  if (!("bytes" in result)) throw new Error("The local core returned an unexpected result.");
+  return result.bytes;
+}
+
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Required interface element is missing: ${selector}`);
@@ -150,6 +162,20 @@ const addPagesButton = requiredElement<HTMLButtonElement>("#add-pages-button");
 const resetPagesButton = requiredElement<HTMLButtonElement>("#reset-pages-button");
 const organizeList = requiredElement<HTMLOListElement>("#organize-list");
 const organizeButton = requiredElement<HTMLButtonElement>("#organize-button");
+const compressResult = requiredElement<HTMLDivElement>("#compress-result");
+const compressResultText = requiredElement<HTMLSpanElement>("#compress-result-text");
+const compressFileInput = requiredElement<HTMLInputElement>("#compress-file-input");
+const compressDropZone = requiredElement<HTMLDivElement>("#compress-drop-zone");
+const compressEditor = requiredElement<HTMLElement>("#compress-editor");
+const compressSourceName = requiredElement<HTMLSpanElement>("#compress-source-name");
+const compressSourceSize = requiredElement<HTMLSpanElement>("#compress-source-size");
+const qualityPresets = requiredElement<HTMLFieldSetElement>("#quality-presets");
+const compressButton = requiredElement<HTMLButtonElement>("#compress-button");
+const compressOutput = requiredElement<HTMLDivElement>("#compress-output");
+const compressBeforeSize = requiredElement<HTMLElement>("#compress-before-size");
+const compressAfterSize = requiredElement<HTMLElement>("#compress-after-size");
+const compressSavedPercent = requiredElement<HTMLElement>("#compress-saved-percent");
+const compressDownloadButton = requiredElement<HTMLButtonElement>("#compress-download-button");
 const version = requiredElement<HTMLElement>("#core-version");
 
 type StatusState = "ready" | "working" | "success" | "error";
@@ -176,6 +202,10 @@ function setOrganizeStatus(text: string, state: StatusState) {
   setStatus(organizeResult, organizeResultText, text, state);
 }
 
+function setCompressStatus(text: string, state: StatusState) {
+  setStatus(compressResult, compressResultText, text, state);
+}
+
 let coreFailed = false;
 
 function onCoreReady(coreVersion: string) {
@@ -183,6 +213,7 @@ function onCoreReady(coreVersion: string) {
   version.textContent = `v${coreVersion}`;
   updateMergeControls();
   updateOrganizeControls();
+  updateCompressControls();
 }
 
 function onCoreFailed() {
@@ -191,8 +222,10 @@ function onCoreFailed() {
   setCountStatus("The local processing core could not load.", "error");
   setMergeStatus("The local processing core could not load.", "error");
   setOrganizeStatus("The local processing core could not load.", "error");
+  setCompressStatus("The local processing core could not load.", "error");
   updateMergeControls();
   updateOrganizeControls();
+  updateCompressControls();
 }
 
 function looksLikePdf(file: File): boolean {
@@ -651,7 +684,137 @@ organizeButton.addEventListener("click", async () => {
   }
 });
 
-type Tool = "page-count" | "merge" | "organize";
+let compressSource: { file: File; pageCount: number } | null = null;
+let compressedResult: { bytes: ArrayBuffer; filename: string } | null = null;
+let compressLoading = false;
+let compressWorking = false;
+
+function updateCompressControls() {
+  const unavailable = compressLoading || compressWorking || coreFailed;
+  compressFileInput.disabled = unavailable;
+  qualityPresets.disabled = unavailable || compressSource === null;
+  compressButton.disabled = unavailable || compressSource === null;
+  compressButton.textContent = compressWorking ? "Compressing…" : "Compress PDF";
+  compressDownloadButton.disabled = compressWorking || compressedResult === null;
+}
+
+function renderCompressSource() {
+  compressEditor.hidden = compressSource === null;
+  compressSourceName.textContent = compressSource?.file.name ?? "";
+  compressSourceSize.textContent = compressSource ? formatFileSize(compressSource.file.size) : "";
+  updateCompressControls();
+}
+
+function resetCompressedResult() {
+  compressedResult = null;
+  compressOutput.hidden = true;
+  compressBeforeSize.textContent = "—";
+  compressAfterSize.textContent = "—";
+  compressSavedPercent.textContent = "—";
+  updateCompressControls();
+}
+
+async function processCompressFile(file: File) {
+  if (!looksLikePdf(file)) {
+    setCompressStatus("Choose a PDF file to continue.", "error");
+    compressFileInput.value = "";
+    return;
+  }
+  if (compressLoading || compressWorking || coreFailed) return;
+
+  compressLoading = true;
+  compressSource = null;
+  resetCompressedResult();
+  renderCompressSource();
+  setCompressStatus(`Reading ${file.name} locally…`, "working");
+
+  try {
+    const pages = await countPages(await file.arrayBuffer());
+    if (pages === 0) throw new Error("This PDF has no pages to compress.");
+    compressSource = { file, pageCount: pages };
+    renderCompressSource();
+    setCompressStatus(
+      `${file.name} is ready — ${pages} ${pages === 1 ? "page" : "pages"}, ${formatFileSize(file.size)}.`,
+      "success",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "This PDF could not be read.";
+    setCompressStatus(message, "error");
+  } finally {
+    compressLoading = false;
+    compressFileInput.value = "";
+    renderCompressSource();
+  }
+}
+
+compressFileInput.addEventListener("change", () => {
+  const [file] = compressFileInput.files ?? [];
+  if (file) void processCompressFile(file);
+});
+wireDropZone(compressDropZone, ([file]) => {
+  if (file) void processCompressFile(file);
+});
+
+qualityPresets.addEventListener("change", () => {
+  if (!compressSource || compressWorking) return;
+  resetCompressedResult();
+  setCompressStatus("Quality updated. Ready to compress locally.", "ready");
+});
+
+compressButton.addEventListener("click", async () => {
+  if (!compressSource || compressWorking || coreFailed) return;
+  const qualityInput = qualityPresets.querySelector<HTMLInputElement>(
+    'input[name="compress-quality"]:checked',
+  );
+  const quality = Number(qualityInput?.value);
+  if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
+    setCompressStatus("Choose a compression quality preset.", "error");
+    return;
+  }
+
+  compressWorking = true;
+  resetCompressedResult();
+  updateCompressControls();
+  setCompressStatus(`Compressing ${compressSource.file.name} locally…`, "working");
+
+  try {
+    const beforeBytes = compressSource.file.size;
+    const compressed = await compressDocument(
+      await compressSource.file.arrayBuffer(),
+      quality,
+    );
+    const afterBytes = compressed.byteLength;
+    const savedBytes = Math.max(0, beforeBytes - afterBytes);
+    const savedPercent = beforeBytes === 0 ? 0 : (savedBytes / beforeBytes) * 100;
+    const baseName = compressSource.file.name.replace(/\.pdf$/i, "") || "document";
+    const filename = `${baseName}-compressed.pdf`;
+
+    compressedResult = { bytes: compressed, filename };
+    compressBeforeSize.textContent = formatFileSize(beforeBytes);
+    compressAfterSize.textContent = formatFileSize(afterBytes);
+    compressSavedPercent.textContent = `${savedPercent.toFixed(1)}% (${formatFileSize(savedBytes)})`;
+    compressOutput.hidden = false;
+    downloadPdf(compressed, filename);
+    setCompressStatus(
+      savedBytes > 0
+        ? `Compressed PDF ready — saved ${savedPercent.toFixed(1)}% and downloaded as ${filename}.`
+        : `No safe size reduction was found. An unchanged-size PDF was downloaded as ${filename}.`,
+      "success",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The PDF could not be compressed.";
+    setCompressStatus(message, "error");
+  } finally {
+    compressWorking = false;
+    updateCompressControls();
+  }
+});
+
+compressDownloadButton.addEventListener("click", () => {
+  if (compressedResult) downloadPdf(compressedResult.bytes, compressedResult.filename);
+});
+
+type Tool = "page-count" | "merge" | "organize" | "compress";
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tool]"));
 const toolPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-panel]"));
 
@@ -671,7 +834,8 @@ for (const button of toolButtons) {
     if (
       button.dataset.tool === "page-count" ||
       button.dataset.tool === "merge" ||
-      button.dataset.tool === "organize"
+      button.dataset.tool === "organize" ||
+      button.dataset.tool === "compress"
     ) {
       switchTool(button.dataset.tool);
     }
@@ -681,8 +845,10 @@ for (const button of toolButtons) {
 setCountStatus("Drop a PDF to count its pages — it never leaves your device.", "ready");
 setMergeStatus("Add PDFs to begin — they never leave your device.", "ready");
 setOrganizeStatus("Choose a PDF to begin — it never leaves your device.", "ready");
+setCompressStatus("Choose a PDF to begin — it never leaves your device.", "ready");
 renderMergeFiles();
 renderOrganizePages();
+renderCompressSource();
 
 const themeToggle = document.querySelector<HTMLButtonElement>("#theme-toggle");
 const themeLabel = document.querySelector<HTMLSpanElement>("#theme-label");

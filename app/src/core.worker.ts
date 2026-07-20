@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import init, {
+  compress_pdf,
   core_version,
   merge_pdfs,
   organize_pdf,
@@ -10,6 +11,7 @@ import init, {
 type WorkerRequest =
   | { id: number; type: "page-count"; bytes: ArrayBuffer }
   | { id: number; type: "merge"; documents: ArrayBuffer[] }
+  | { id: number; type: "compress"; bytes: ArrayBuffer; quality: number }
   | {
       id: number;
       type: "organize";
@@ -53,12 +55,14 @@ scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
       result = merge_pdfs(
         request.documents.map((document) => new Uint8Array(document)),
       );
-    } else {
+    } else if (request.type === "organize") {
       result = organize_pdf(
         new Uint8Array(request.bytes),
         new Uint32Array(request.pages),
         new Int32Array(request.rotations),
       );
+    } else {
+      result = compress_pdf(new Uint8Array(request.bytes), request.quality);
     }
     const bytes = result.slice().buffer;
     scope.postMessage(
