@@ -815,30 +815,191 @@ compressDownloadButton.addEventListener("click", () => {
 });
 
 type Tool = "page-count" | "merge" | "organize" | "compress";
+const TOOL_TITLES: Record<Tool, string> = {
+  "page-count": "Count PDF Pages — localbench",
+  merge: "Merge PDFs — localbench",
+  organize: "Organize PDF Pages — localbench",
+  compress: "Compress PDF — localbench",
+};
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tool]"));
 const toolPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-panel]"));
+const toolSwitcher = requiredElement<HTMLElement>(".tool-switcher");
+const openGraphTitle = requiredElement<HTMLMetaElement>('meta[property="og:title"]');
+const twitterTitle = requiredElement<HTMLMetaElement>('meta[name="twitter:title"]');
 
-function switchTool(tool: Tool) {
+function isTool(value: string | undefined): value is Tool {
+  return (
+    value === "page-count" ||
+    value === "merge" ||
+    value === "organize" ||
+    value === "compress"
+  );
+}
+
+function toolFromHash(): Tool | null {
+  const value = location.hash.slice(1);
+  return isTool(value) ? value : null;
+}
+
+function switchTool(tool: Tool, updateHash = false) {
   for (const button of toolButtons) {
     const active = button.dataset.tool === tool;
-    if (active) button.setAttribute("aria-current", "page");
-    else button.removeAttribute("aria-current");
+    button.tabIndex = active ? 0 : -1;
+    if (active) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
   }
   for (const panel of toolPanels) {
     panel.hidden = panel.dataset.toolPanel !== tool;
+  }
+
+  const title = TOOL_TITLES[tool];
+  document.title = title;
+  openGraphTitle.content = title;
+  twitterTitle.content = title;
+
+  if (updateHash && location.hash !== `#${tool}`) {
+    history.pushState(null, "", `${location.pathname}${location.search}#${tool}`);
   }
 }
 
 for (const button of toolButtons) {
   button.addEventListener("click", () => {
-    if (
-      button.dataset.tool === "page-count" ||
-      button.dataset.tool === "merge" ||
-      button.dataset.tool === "organize" ||
-      button.dataset.tool === "compress"
-    ) {
-      switchTool(button.dataset.tool);
+    if (isTool(button.dataset.tool)) switchTool(button.dataset.tool, true);
+  });
+}
+
+toolSwitcher.addEventListener("keydown", (event) => {
+  const currentIndex = toolButtons.findIndex((button) => button === document.activeElement);
+  if (currentIndex < 0) return;
+
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    nextIndex = (currentIndex + 1) % toolButtons.length;
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    nextIndex = (currentIndex - 1 + toolButtons.length) % toolButtons.length;
+  } else if (event.key === "Home") {
+    nextIndex = 0;
+  } else if (event.key === "End") {
+    nextIndex = toolButtons.length - 1;
+  }
+
+  if (nextIndex === null) return;
+  event.preventDefault();
+  const nextButton = toolButtons[nextIndex];
+  if (isTool(nextButton.dataset.tool)) switchTool(nextButton.dataset.tool, true);
+  nextButton.focus();
+});
+
+function restoreToolFromHash() {
+  const tool = toolFromHash() ?? "page-count";
+  switchTool(tool);
+  if (location.hash !== `#${tool}`) {
+    history.replaceState(null, "", `${location.pathname}${location.search}#${tool}`);
+  }
+}
+
+window.addEventListener("hashchange", restoreToolFromHash);
+window.addEventListener("popstate", restoreToolFromHash);
+restoreToolFromHash();
+
+const localBadge = requiredElement<HTMLButtonElement>("#local-badge");
+const localInspector = requiredElement<HTMLDialogElement>("#local-inspector");
+const inspectorClose = requiredElement<HTMLButtonElement>("#inspector-close");
+const externalRequestCount = requiredElement<HTMLElement>("#external-request-count");
+const cspConnectSrc = requiredElement<HTMLElement>("#csp-connect-src");
+const offlineControlStatus = requiredElement<HTMLElement>("#offline-control-status");
+const cspMeta = requiredElement<HTMLMetaElement>(
+  'meta[http-equiv="Content-Security-Policy"]',
+);
+let inspectorReturnFocus: HTMLElement | null = null;
+
+function updateInspectorProof() {
+  const externalResources = performance.getEntriesByType("resource").filter((entry) => {
+    try {
+      return new URL(entry.name, location.href).origin !== location.origin;
+    } catch {
+      return true;
     }
+  });
+  externalRequestCount.textContent = String(externalResources.length);
+
+  const connectDirective = cspMeta.content
+    .split(";")
+    .map((directive) => directive.trim())
+    .find((directive) => /^connect-src(?:\s|$)/i.test(directive));
+  cspConnectSrc.textContent = connectDirective ?? "Not declared";
+
+  const controlled =
+    "serviceWorker" in navigator && navigator.serviceWorker.controller !== null;
+  offlineControlStatus.textContent = controlled
+    ? "Yes — a service worker controls this page"
+    : "Not yet — reload once after the first visit";
+}
+
+function focusableInspectorElements(): HTMLElement[] {
+  return Array.from(
+    localInspector.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+}
+
+localBadge.addEventListener("click", () => {
+  updateInspectorProof();
+  inspectorReturnFocus = localBadge;
+  localInspector.showModal();
+  inspectorClose.focus();
+});
+
+function restoreInspectorFocus() {
+  const returnTarget = inspectorReturnFocus;
+  inspectorReturnFocus = null;
+  returnTarget?.focus();
+}
+
+function closeInspector() {
+  localInspector.close();
+  restoreInspectorFocus();
+}
+
+inspectorClose.addEventListener("click", closeInspector);
+
+localInspector.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeInspector();
+});
+
+localInspector.addEventListener("click", (event) => {
+  if (event.target === localInspector) closeInspector();
+});
+
+localInspector.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = focusableInspectorElements();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+localInspector.addEventListener("close", restoreInspectorFocus);
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (localInspector.open) updateInspectorProof();
   });
 }
 
