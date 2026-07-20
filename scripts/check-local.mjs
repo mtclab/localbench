@@ -44,12 +44,12 @@ function maskExpectedInertUrls(relative, contents) {
   if (relative === "index.html") {
     return contents
       .replace(
-        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/localbench\.pages\.dev\/["'])[^>]*>/gi,
-        (tag) => tag.replace("https://localbench.pages.dev/", ""),
+        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://pdf.keeplocal.tools/", ""),
       )
       .replace(
-        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/localbench\.pages\.dev\/["'])[^>]*>/gi,
-        (tag) => tag.replace("https://localbench.pages.dev/", ""),
+        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://pdf.keeplocal.tools/", ""),
       )
       .replace(
         /<a\b(?=[^>]*\bhref=["']https:\/\/github\.com\/mtclab\/localbench["'])[^>]*>/gi,
@@ -60,20 +60,20 @@ function maskExpectedInertUrls(relative, contents) {
         (block) =>
           block
             .replace("https://schema.org", "")
-            .replace("https://localbench.pages.dev/", ""),
+            .replace("https://pdf.keeplocal.tools/", ""),
       );
   }
 
   if (relative === "sitemap.xml") {
     return contents.replace(
-      /<loc>https:\/\/localbench\.pages\.dev\/<\/loc>/gi,
+      /<loc>https:\/\/pdf\.keeplocal\.tools\/<\/loc>/gi,
       "<loc></loc>",
     );
   }
 
   if (relative === "robots.txt") {
     return contents.replace(
-      /^Sitemap:\s+https:\/\/localbench\.pages\.dev\/sitemap\.xml\s*$/gim,
+      /^Sitemap:\s+https:\/\/pdf\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
       "Sitemap:",
     );
   }
