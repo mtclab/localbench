@@ -11,6 +11,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Pure-Rust codecs with permissive licenses; default features keep native SIMD
 # backends out so the same implementation builds for wasm32-unknown-unknown.
+image = { version = "0.25.10", default-features = false, features = [
+    "bmp",
+    "gif",
+    "jpeg",
+    "png",
+    "webp",
+] }
 jpeg-encoder = { version = "0.6.1", default-features = false }
 js-sys = { version = "0.3.77", default-features = false }
 lopdf = { version = "0.38.0", default-features = false }
