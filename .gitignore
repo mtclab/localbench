@@ -20,3 +20,7 @@
 
 # wrangler local state
 .wrangler/
+
+# image smoke corpus (generated, not committed to public repo)
+img-corpus/
+shots-img/
