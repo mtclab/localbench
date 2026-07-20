@@ -13,13 +13,13 @@ The big file-tool sites (Smallpdf, iLovePDF, Adobe online, cloudconvert) all upl
 That promise is only worth anything if you can verify it, so:
 
 - **Fully static, no backend.** Nothing to upload to.
-- **Strict CSP** (`connect-src 'none'` after load) - the browser itself blocks any network call.
+- **Strict CSP** (`connect-src 'self'`) - WASM and app assets can load only from the same static origin, while external exfiltration is blocked.
 - **Works offline.** Install it, pull your network cable, it still works. That is the proof.
 - **Open source.** Read the code.
 
 ## Status
 
-V1 in planning. Anchor tool = **PDF ops** (merge / split / page-ops / compress). See [`docs/V1-SPEC.md`](docs/V1-SPEC.md).
+S0 proves the Rust → WASM → worker → UI pipeline with a local PDF page counter. The later V1 anchor remains **PDF ops** (merge / split / page-ops / compress). See [`docs/V1-SPEC.md`](docs/V1-SPEC.md).
 
 Concept + wedge analysis: [mtclab/ideas #9](https://github.com/mtclab/ideas/issues/9).
 
@@ -28,3 +28,17 @@ Concept + wedge analysis: [mtclab/ideas #9](https://github.com/mtclab/ideas/issu
 Rust core compiled to WebAssembly (all file logic), driven by a thin vanilla-TypeScript shell. WASM runs in Web Workers; PWA for offline; hosted on Cloudflare Pages. Minimal dependencies by design (smaller = more auditable).
 
 Built by [MTC Lab](https://mtclab.net).
+
+## Build and verify
+
+Prerequisites: Rust with the `wasm32-unknown-unknown` target, `wasm-pack`, and Node.js 22.
+
+```sh
+wasm-pack build core-rs --target web --out-dir ../app/src/wasm
+cd app && npm ci && npm run build
+cd .. && node scripts/check-local.mjs
+```
+
+The `../app/src/wasm` path is resolved by `wasm-pack` from the `core-rs` crate directory. `make build` runs this same pipeline. Cloudflare Pages should use `app/dist` as its output directory; deployment is intentionally handled through the owner's dashboard Git integration.
+
+The CSP permits only same-origin connections because the origin serves static app assets and WASM—there is no server upload endpoint. `wasm-unsafe-eval` is the sole eval-class allowance and is required for WebAssembly instantiation.
