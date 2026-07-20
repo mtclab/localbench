@@ -244,7 +244,10 @@ fn walk_jpeg(bytes: &[u8], strip: bool) -> Result<(Vec<MetadataItem>, Vec<u8>), 
 
     while position < bytes.len() {
         let marker_start = position;
-        if bytes[position] != 0xff {
+        // Indexed access would be safe under the loop guard, but read through
+        // `get` so a future change to the loop condition can never make this panic
+        // (a panic aborts the whole wasm instance and would hang the worker).
+        if bytes.get(position) != Some(&0xff) {
             return Err("Could not read this JPEG marker stream.".to_owned());
         }
         while bytes.get(position) == Some(&0xff) {
@@ -279,6 +282,10 @@ fn walk_jpeg(bytes: &[u8], strip: bool) -> Result<(Vec<MetadataItem>, Vec<u8>), 
             .ok_or_else(|| "Could not read this truncated JPEG segment.".to_owned())?;
 
         if marker == 0xda {
+            // Entropy-coded scan data follows SOS and has no length prefix; the
+            // JPEG spec requires it to terminate with an EOI (FF D9). Require that
+            // marker before copying the tail verbatim, so truncated files (which
+            // would otherwise emit a broken JPEG) are rejected instead.
             if !bytes[segment_end..]
                 .windows(2)
                 .any(|window| window == [0xff, 0xd9])

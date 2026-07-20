@@ -26,3 +26,8 @@
 # image smoke corpus (generated, not committed to public repo)
 img-corpus/
 shots-img/
+
+# scrubber smoke corpus + venv (generated, not committed to public repo)
+scrub-corpus/
+shots-scrub/
+.scrubvenv/
