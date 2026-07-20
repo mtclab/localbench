@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta
+      name="description"
+      content="See and remove hidden metadata from PDFs, JPEGs, and PNGs privately in your browser. Nothing is uploaded."
+    />
+    <link rel="canonical" href="https://scrub.keeplocal.tools/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="localbench" />
+    <meta property="og:title" content="Remove File Metadata — localbench" />
+    <meta
+      property="og:description"
+      content="Inspect and clean file metadata entirely in your browser. Your files never leave your device."
+    />
+    <meta property="og:url" content="https://scrub.keeplocal.tools/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Remove File Metadata — localbench" />
+    <meta
+      name="twitter:description"
+      content="Inspect and clean file metadata entirely in your browser. Your files never leave your device."
+    />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Remove File Metadata — localbench</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "localbench — Private Metadata Scrubber",
+        "url": "https://scrub.keeplocal.tools/",
+        "description": "A private metadata scrubber that inspects and cleans PDF, JPEG, and PNG files entirely in the browser.",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with WebAssembly support",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-cluster">
+        <a class="brand" href="/#scrub" aria-label="localbench home">
+          <span class="brand-mark" aria-hidden="true">lb</span>
+          <span>localbench</span>
+        </a>
+        <button
+          class="local-badge"
+          id="local-badge"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="local-inspector"
+          aria-label="Open verified local privacy inspector"
+        >
+          <span aria-hidden="true">🔒</span>
+          <span>Verified local</span>
+        </button>
+      </div>
+      <nav class="tool-navigation" aria-label="Metadata tools">
+        <span class="nav-label">Tool</span>
+        <div class="tool-switcher" role="group" aria-label="Choose a metadata tool">
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="scrub"
+            aria-current="page"
+            aria-controls="scrub-panel"
+            tabindex="0"
+          >
+            Scrub metadata
+          </button>
+        </div>
+      </nav>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
+        <span aria-hidden="true" id="theme-icon">◐</span>
+        <span id="theme-label">Theme</span>
+      </button>
+    </header>
+
+    <dialog
+      class="local-inspector"
+      id="local-inspector"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-inspector-title"
+      aria-describedby="local-inspector-description"
+    >
+      <div class="inspector-content">
+        <div class="inspector-header">
+          <div>
+            <p class="card-kicker">Live privacy proof</p>
+            <h2 id="local-inspector-title">Verified local</h2>
+          </div>
+          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close privacy inspector">×</button>
+        </div>
+        <p id="local-inspector-description">
+          These checks come from this browser session, not from a server claim.
+        </p>
+        <dl class="proof-list">
+          <div>
+            <dt>External requests since load</dt>
+            <dd id="external-request-count">0</dd>
+          </div>
+          <div class="proof-code-row">
+            <dt>Active connection policy</dt>
+            <dd><code id="csp-connect-src">connect-src 'self'</code></dd>
+          </div>
+          <div>
+            <dt>Offline page control</dt>
+            <dd id="offline-control-status">Checking…</dd>
+          </div>
+        </dl>
+        <p class="proof-explanation">
+          <code>connect-src 'self'</code> allows app connections only to this static origin, blocking uploads to external services.
+        </p>
+        <a class="source-link" href="https://github.com/mtclab/localbench" target="_blank" rel="noopener noreferrer">Read the source <span aria-hidden="true">↗</span></a>
+      </div>
+    </dialog>
+
+    <main>
+      <section class="hero tool-panel" id="scrub-panel" data-tool-panel="scrub" aria-labelledby="scrub-title">
+        <p class="eyebrow">See what was hiding</p>
+        <h1 id="scrub-title">Remove metadata without changing your file.</h1>
+        <p class="lede">
+          Your file is inspected and cleaned in this tab. Nothing is uploaded.
+          JPEG and PNG pixels stay byte-for-byte intact; PDF pages are preserved.
+        </p>
+
+        <div class="drop-zone organize-drop-zone" id="scrub-drop-zone">
+          <input id="scrub-file-input" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
+          <label for="scrub-file-input">
+            <span class="drop-icon" aria-hidden="true">⌁</span>
+            <span class="drop-title">Drop a PDF, JPEG, or PNG here</span>
+            <span class="drop-detail">or choose one from your device</span>
+          </label>
+        </div>
+
+        <section class="compress-editor" id="scrub-editor" aria-labelledby="scrub-editor-title" hidden>
+          <div class="merge-queue-header compress-editor-header">
+            <div>
+              <h2 id="scrub-editor-title">Local metadata inspection</h2>
+              <span class="organize-source-name" id="scrub-source-name"></span>
+            </div>
+            <span id="scrub-source-size"></span>
+          </div>
+
+          <div class="page-list-empty">
+            <img id="scrub-preview" alt="" hidden style="display: block; width: auto; height: auto; max-width: 100%; max-height: 260px; margin: 0 auto; border-radius: 9px" />
+            <div class="merge-file" id="scrub-pdf-chip" hidden>
+              <span class="file-order" aria-hidden="true">PDF</span>
+              <span class="file-details">
+                <strong class="file-name" id="scrub-pdf-name"></strong>
+                <span class="file-size" id="scrub-pdf-size"></span>
+              </span>
+            </div>
+            <span id="scrub-preview-detail"></span>
+          </div>
+
+          <div class="page-add-form" id="metadata-report" hidden>
+            <div class="merge-queue-header">
+              <h2>Metadata report</h2>
+              <span id="metadata-count"></span>
+            </div>
+            <ul class="merge-list" id="metadata-list" aria-label="Metadata found"></ul>
+            <div class="page-list-empty" id="metadata-clean" hidden>
+              No metadata found — this file is already clean.
+            </div>
+          </div>
+
+          <button class="primary-action" id="scrub-button" type="button" disabled>Remove all metadata</button>
+
+          <div class="compress-output" id="scrub-output" hidden>
+            <dl class="compression-stats" aria-label="Metadata scrub result">
+              <div><dt>Before</dt><dd id="scrub-before-size">—</dd></div>
+              <div><dt>After</dt><dd id="scrub-after-size">—</dd></div>
+              <div><dt>Removed</dt><dd id="scrub-removed-count">—</dd></div>
+            </dl>
+            <p class="compress-scope" id="scrub-removed-summary"></p>
+            <div class="page-list-empty" id="scrub-proof"></div>
+            <button class="secondary-action download-action" id="scrub-download-button" type="button" disabled>
+              Download clean file
+            </button>
+          </div>
+        </section>
+
+        <div class="result" id="scrub-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="scrub-result-text">Choose a PDF, JPEG, or PNG to inspect — it never leaves your device.</span>
+        </div>
+      </section>
+
+      <aside class="trust-card" aria-labelledby="trust-title">
+        <p class="card-kicker">What gets removed</p>
+        <h2 id="trust-title">Private metadata, not your content.</h2>
+        <p>
+          Removes EXIF/GPS, XMP, IPTC/Photoshop, JPEG comments, PNG text and time chunks,
+          plus PDF document info and XMP. JFIF and ICC color profiles are preserved.
+        </p>
+        <dl>
+          <div><dt>Core</dt><dd id="core-version">Loading…</dd></div>
+          <div><dt>Processing</dt><dd>On this device</dd></div>
+          <div><dt>Uploads</dt><dd>Blocked</dd></div>
+        </dl>
+      </aside>
+    </main>
+
+    <footer>
+      <p>No uploads. No tracking. Just local tools.</p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
