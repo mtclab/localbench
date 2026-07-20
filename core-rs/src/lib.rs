@@ -6,8 +6,10 @@ use zune_jpeg::{
     JpegDecoder,
 };
 
+mod archive_ops;
 mod image_ops;
 
+pub use archive_ops::{create_zip, extract_zip_entry, list_zip};
 pub use image_ops::{compress_image, convert_image, resize_image};
 
 const ENCRYPTED_PDF_ERROR: &str = "This PDF is password-protected, so its pages can't be read.";

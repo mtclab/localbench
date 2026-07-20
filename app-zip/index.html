@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta
+      name="description"
+      content="Create and extract ZIP archives privately in your browser. No uploads, accounts, or tracking."
+    />
+    <link rel="canonical" href="https://zip.keeplocal.tools/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="localbench" />
+    <meta property="og:title" content="Create ZIP Archives — localbench" />
+    <meta
+      property="og:description"
+      content="Private ZIP tools that run entirely in your browser. Your files never leave your device."
+    />
+    <meta property="og:url" content="https://zip.keeplocal.tools/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Create ZIP Archives — localbench" />
+    <meta
+      name="twitter:description"
+      content="Private ZIP tools that run entirely in your browser. Your files never leave your device."
+    />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Create ZIP Archives — localbench</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "localbench — Private ZIP Tools",
+        "url": "https://zip.keeplocal.tools/",
+        "description": "Private ZIP tools that create and extract archives entirely in the browser.",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with WebAssembly support",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-cluster">
+        <a class="brand" href="/#create" aria-label="localbench home">
+          <span class="brand-mark" aria-hidden="true">lb</span>
+          <span>localbench</span>
+        </a>
+        <button
+          class="local-badge"
+          id="local-badge"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="local-inspector"
+          aria-label="Open verified local privacy inspector"
+        >
+          <span aria-hidden="true">🔒</span>
+          <span>Verified local</span>
+        </button>
+      </div>
+      <nav class="tool-navigation" aria-label="ZIP tools">
+        <span class="nav-label">Tools</span>
+        <div class="tool-switcher" role="group" aria-label="Choose a ZIP tool">
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="create"
+            aria-current="page"
+            aria-controls="create-panel"
+            tabindex="0"
+          >
+            Create
+          </button>
+          <button
+            class="nav-tool"
+            type="button"
+            data-tool="extract"
+            aria-controls="extract-panel"
+            tabindex="-1"
+          >
+            Extract
+          </button>
+        </div>
+      </nav>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
+        <span aria-hidden="true" id="theme-icon">◐</span>
+        <span id="theme-label">Theme</span>
+      </button>
+    </header>
+
+    <dialog
+      class="local-inspector"
+      id="local-inspector"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-inspector-title"
+      aria-describedby="local-inspector-description"
+    >
+      <div class="inspector-content">
+        <div class="inspector-header">
+          <div>
+            <p class="card-kicker">Live privacy proof</p>
+            <h2 id="local-inspector-title">Verified local</h2>
+          </div>
+          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close privacy inspector">×</button>
+        </div>
+        <p id="local-inspector-description">
+          These checks come from this browser session, not from a server claim.
+        </p>
+        <dl class="proof-list">
+          <div>
+            <dt>External requests since load</dt>
+            <dd id="external-request-count">0</dd>
+          </div>
+          <div class="proof-code-row">
+            <dt>Active connection policy</dt>
+            <dd><code id="csp-connect-src">connect-src 'self'</code></dd>
+          </div>
+          <div>
+            <dt>Offline page control</dt>
+            <dd id="offline-control-status">Checking…</dd>
+          </div>
+        </dl>
+        <p class="proof-explanation">
+          <code>connect-src 'self'</code> allows app connections only to this static origin, blocking uploads to external services.
+        </p>
+        <a class="source-link" href="https://github.com/mtclab/localbench" target="_blank" rel="noopener noreferrer">Read the source <span aria-hidden="true">↗</span></a>
+      </div>
+    </dialog>
+
+    <main>
+      <section class="hero tool-panel" id="create-panel" data-tool-panel="create" aria-labelledby="create-title">
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="create-title">Zip files without uploading a thing.</h1>
+        <p class="lede">
+          Bundle sensitive documents in the localbench Rust core. Every byte stays in this tab,
+          and entry timestamps are normalized so your local clock is not stored.
+        </p>
+
+        <div class="drop-zone merge-drop-zone" id="create-drop-zone">
+          <input id="create-file-input" type="file" multiple />
+          <label for="create-file-input">
+            <span class="drop-icon" aria-hidden="true">＋</span>
+            <span class="drop-title">Drop files here</span>
+            <span class="drop-detail">or choose files from your device</span>
+          </label>
+        </div>
+
+        <section class="merge-queue" id="create-editor" aria-labelledby="create-editor-title" hidden>
+          <div class="merge-queue-header">
+            <h2 id="create-editor-title">Files to archive</h2>
+            <span id="create-total">0 B</span>
+          </div>
+          <ul class="merge-list" id="create-file-list"></ul>
+          <button class="primary-action" id="create-button" type="button" disabled>Create .zip</button>
+
+          <div class="compress-output" id="create-output" hidden>
+            <dl class="compression-stats" aria-label="Created archive summary">
+              <div><dt>Entries</dt><dd id="create-output-count">—</dd></div>
+              <div><dt>Archive size</dt><dd id="create-output-size">—</dd></div>
+              <div><dt>Timestamps</dt><dd>Normalized</dd></div>
+            </dl>
+            <p class="compress-scope">Entry timestamps are normalized (your clock isn't stored).</p>
+            <button class="secondary-action download-action" id="create-download-button" type="button">
+              Download archive.zip
+            </button>
+          </div>
+        </section>
+
+        <div class="result" id="create-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="create-result-text">Choose files to begin — they never leave your device.</span>
+        </div>
+      </section>
+
+      <section class="hero tool-panel" id="extract-panel" data-tool-panel="extract" aria-labelledby="extract-title" hidden>
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="extract-title">Open ZIP files entirely on your device.</h1>
+        <p class="lede">
+          Inspect an archive and download only the entries you need. Password-protected,
+          malformed, and unsafe oversized archives are rejected locally.
+        </p>
+
+        <div class="drop-zone organize-drop-zone" id="extract-drop-zone">
+          <input id="extract-file-input" type="file" accept=".zip,application/zip" />
+          <label for="extract-file-input">
+            <span class="drop-icon" aria-hidden="true">⇣</span>
+            <span class="drop-title">Drop a .zip here</span>
+            <span class="drop-detail">or choose one from your device</span>
+          </label>
+        </div>
+
+        <section class="organize-editor" id="extract-editor" aria-labelledby="extract-editor-title" hidden>
+          <div class="merge-queue-header organize-editor-header">
+            <div>
+              <h2 id="extract-editor-title">Archive entries</h2>
+              <span class="organize-source-name" id="extract-source-name"></span>
+            </div>
+            <span id="extract-source-size"></span>
+          </div>
+
+          <div class="page-list-tools">
+            <span id="extract-entry-count">0 entries</span>
+            <span>Unsafe paths are renamed to a safe basename.</span>
+          </div>
+          <div
+            class="organize-list"
+            id="extract-entry-table"
+            role="table"
+            aria-label="ZIP archive entries"
+          ></div>
+          <button class="secondary-action download-action" id="extract-all-button" type="button" disabled>
+            Download all safe files
+          </button>
+        </section>
+
+        <div class="result" id="extract-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="extract-result-text">Choose a ZIP archive to inspect locally.</span>
+        </div>
+      </section>
+
+      <aside class="trust-card" aria-labelledby="trust-title">
+        <p class="card-kicker">Local-only guarantee</p>
+        <h2 id="trust-title">The browser blocks uploads.</h2>
+        <p>
+          A strict Content Security Policy permits connections only to this static origin.
+          Once cached, localbench works offline too.
+        </p>
+        <dl>
+          <div><dt>Core</dt><dd id="core-version">Loading…</dd></div>
+          <div><dt>Processing</dt><dd>On this device</dd></div>
+          <div><dt>Account</dt><dd>Not needed</dd></div>
+        </dl>
+      </aside>
+    </main>
+
+    <footer>
+      <p>No uploads. No tracking. Just local tools.</p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
