@@ -1,10 +1,22 @@
 /// <reference lib="webworker" />
 
-import init, { core_version, merge_pdfs, pdf_page_count } from "./wasm/localbench_core.js";
+import init, {
+  core_version,
+  merge_pdfs,
+  organize_pdf,
+  pdf_page_count,
+} from "./wasm/localbench_core.js";
 
 type WorkerRequest =
   | { id: number; type: "page-count"; bytes: ArrayBuffer }
-  | { id: number; type: "merge"; documents: ArrayBuffer[] };
+  | { id: number; type: "merge"; documents: ArrayBuffer[] }
+  | {
+      id: number;
+      type: "organize";
+      bytes: ArrayBuffer;
+      pages: number[];
+      rotations: number[];
+    };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
@@ -36,10 +48,19 @@ scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
       return;
     }
 
-    const merged = merge_pdfs(
-      request.documents.map((document) => new Uint8Array(document)),
-    );
-    const bytes = merged.slice().buffer;
+    let result: Uint8Array;
+    if (request.type === "merge") {
+      result = merge_pdfs(
+        request.documents.map((document) => new Uint8Array(document)),
+      );
+    } else {
+      result = organize_pdf(
+        new Uint8Array(request.bytes),
+        new Uint32Array(request.pages),
+        new Int32Array(request.rotations),
+      );
+    }
+    const bytes = result.slice().buffer;
     scope.postMessage(
       { type: "result", id: request.id, bytes } satisfies WorkerResponse,
       [bytes],

@@ -4,7 +4,14 @@ import "./style.css";
 // Rust core version) once on load; every operation is id-matched.
 type WorkerRequest =
   | { id: number; type: "page-count"; bytes: ArrayBuffer }
-  | { id: number; type: "merge"; documents: ArrayBuffer[] };
+  | { id: number; type: "merge"; documents: ArrayBuffer[] }
+  | {
+      id: number;
+      type: "organize";
+      bytes: ArrayBuffer;
+      pages: number[];
+      rotations: number[];
+    };
 
 type WorkerResult =
   | { type: "result"; id: number; pages: number }
@@ -97,6 +104,21 @@ async function mergeDocuments(documents: ArrayBuffer[]): Promise<ArrayBuffer> {
   return result.bytes;
 }
 
+async function organizeDocument(
+  bytes: ArrayBuffer,
+  pages: number[],
+  rotations: number[],
+): Promise<ArrayBuffer> {
+  const id = nextRequestId++;
+  const result = await runCoreRequest(
+    { id, type: "organize", bytes, pages, rotations },
+    [bytes],
+    120_000,
+  );
+  if (!("bytes" in result)) throw new Error("The local core returned an unexpected result.");
+  return result.bytes;
+}
+
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Required interface element is missing: ${selector}`);
@@ -115,6 +137,19 @@ const mergeQueue = requiredElement<HTMLElement>("#merge-queue");
 const mergeList = requiredElement<HTMLOListElement>("#merge-list");
 const mergeSummary = requiredElement<HTMLSpanElement>("#merge-summary");
 const mergeButton = requiredElement<HTMLButtonElement>("#merge-button");
+const organizeResult = requiredElement<HTMLDivElement>("#organize-result");
+const organizeResultText = requiredElement<HTMLSpanElement>("#organize-result-text");
+const organizeFileInput = requiredElement<HTMLInputElement>("#organize-file-input");
+const organizeDropZone = requiredElement<HTMLDivElement>("#organize-drop-zone");
+const organizeEditor = requiredElement<HTMLElement>("#organize-editor");
+const organizeSourceName = requiredElement<HTMLSpanElement>("#organize-source-name");
+const organizeSummary = requiredElement<HTMLSpanElement>("#organize-summary");
+const pageAddForm = requiredElement<HTMLFormElement>("#page-add-form");
+const pageRangeInput = requiredElement<HTMLInputElement>("#page-range-input");
+const addPagesButton = requiredElement<HTMLButtonElement>("#add-pages-button");
+const resetPagesButton = requiredElement<HTMLButtonElement>("#reset-pages-button");
+const organizeList = requiredElement<HTMLOListElement>("#organize-list");
+const organizeButton = requiredElement<HTMLButtonElement>("#organize-button");
 const version = requiredElement<HTMLElement>("#core-version");
 
 type StatusState = "ready" | "working" | "success" | "error";
@@ -137,12 +172,17 @@ function setMergeStatus(text: string, state: StatusState) {
   setStatus(mergeResult, mergeResultText, text, state);
 }
 
+function setOrganizeStatus(text: string, state: StatusState) {
+  setStatus(organizeResult, organizeResultText, text, state);
+}
+
 let coreFailed = false;
 
 function onCoreReady(coreVersion: string) {
   coreFailed = false;
   version.textContent = `v${coreVersion}`;
   updateMergeControls();
+  updateOrganizeControls();
 }
 
 function onCoreFailed() {
@@ -150,7 +190,9 @@ function onCoreFailed() {
   version.textContent = "Unavailable";
   setCountStatus("The local processing core could not load.", "error");
   setMergeStatus("The local processing core could not load.", "error");
+  setOrganizeStatus("The local processing core could not load.", "error");
   updateMergeControls();
+  updateOrganizeControls();
 }
 
 function looksLikePdf(file: File): boolean {
@@ -325,11 +367,11 @@ mergeFileInput.addEventListener("change", () => {
 });
 wireDropZone(mergeDropZone, addMergeFiles);
 
-function downloadMergedPdf(bytes: ArrayBuffer) {
+function downloadPdf(bytes: ArrayBuffer, filename: string) {
   const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = "merged.pdf";
+  link.download = filename;
   link.hidden = true;
   document.body.append(link);
   link.click();
@@ -351,7 +393,7 @@ mergeButton.addEventListener("click", async () => {
     // JS reads, transfers, and downloads bytes only; Rust owns all PDF interpretation.
     const documents = await Promise.all(selectedMergeFiles.map((file) => file.arrayBuffer()));
     const merged = await mergeDocuments(documents);
-    downloadMergedPdf(merged);
+    downloadPdf(merged, "merged.pdf");
     setMergeStatus("Merged PDF ready — downloaded as merged.pdf.", "success");
   } catch (error) {
     const message = error instanceof Error ? error.message : "The PDFs could not be merged.";
@@ -362,7 +404,254 @@ mergeButton.addEventListener("click", async () => {
   }
 });
 
-type Tool = "page-count" | "merge";
+type OrganizeEntry = { page: number; rotation: 0 | 90 | 180 | 270 };
+
+let organizeSource: { file: File; pageCount: number } | null = null;
+let organizeEntries: OrganizeEntry[] = [];
+let organizeLoading = false;
+let organizeWorking = false;
+
+function updateOrganizeControls() {
+  const unavailable = organizeLoading || organizeWorking || coreFailed;
+  organizeFileInput.disabled = unavailable;
+  pageRangeInput.disabled = unavailable || organizeSource === null;
+  addPagesButton.disabled = unavailable || organizeSource === null;
+  resetPagesButton.disabled = unavailable || organizeSource === null;
+  organizeButton.disabled = unavailable || organizeSource === null || organizeEntries.length === 0;
+  organizeButton.textContent = organizeWorking ? "Exporting…" : "Export organized PDF";
+}
+
+function setOrganizeReadyStatus(message = "Output updated. Ready to export locally.") {
+  if (!organizeWorking) setOrganizeStatus(message, "ready");
+}
+
+function moveOrganizePage(index: number, direction: -1 | 1) {
+  const target = index + direction;
+  if (target < 0 || target >= organizeEntries.length || organizeWorking) return;
+  [organizeEntries[index], organizeEntries[target]] = [
+    organizeEntries[target],
+    organizeEntries[index],
+  ];
+  renderOrganizePages();
+  setOrganizeReadyStatus("Page order updated. Ready to export locally.");
+}
+
+function removeOrganizePage(index: number) {
+  if (organizeWorking) return;
+  organizeEntries.splice(index, 1);
+  renderOrganizePages();
+  setOrganizeReadyStatus(
+    organizeEntries.length === 0
+      ? "The output is empty. Add pages before exporting."
+      : "Page removed from the output. Ready to export locally.",
+  );
+}
+
+function renderOrganizePages() {
+  organizeList.replaceChildren();
+  organizeEditor.hidden = organizeSource === null;
+  organizeSourceName.textContent = organizeSource?.file.name ?? "";
+  organizeSummary.textContent = organizeSource
+    ? `${organizeEntries.length} output ${organizeEntries.length === 1 ? "page" : "pages"} · ${organizeSource.pageCount} source ${organizeSource.pageCount === 1 ? "page" : "pages"}`
+    : "";
+
+  if (organizeSource && organizeEntries.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "page-list-empty";
+    empty.textContent = "No output pages yet. Add a page number or range above.";
+    organizeList.append(empty);
+  }
+
+  organizeEntries.forEach((entry, index) => {
+    const item = document.createElement("li");
+    item.className = "organize-page";
+
+    const order = document.createElement("span");
+    order.className = "file-order";
+    order.textContent = String(index + 1);
+    order.setAttribute("aria-label", `Output position ${index + 1}`);
+
+    const details = document.createElement("span");
+    details.className = "file-details";
+    const pageName = document.createElement("strong");
+    pageName.className = "file-name";
+    pageName.textContent = `Page ${entry.page}`;
+    const sourceDetail = document.createElement("span");
+    sourceDetail.className = "file-size";
+    sourceDetail.textContent = `Source page ${entry.page}`;
+    details.append(pageName, sourceDetail);
+
+    const rotationLabel = document.createElement("label");
+    rotationLabel.className = "rotation-control";
+    const rotationText = document.createElement("span");
+    rotationText.textContent = "Rotate";
+    const rotationSelect = document.createElement("select");
+    rotationSelect.setAttribute("aria-label", `Rotation for output page ${index + 1}, source page ${entry.page}`);
+    for (const rotation of [0, 90, 180, 270] as const) {
+      const option = document.createElement("option");
+      option.value = String(rotation);
+      option.textContent = `${rotation}°`;
+      option.selected = entry.rotation === rotation;
+      rotationSelect.append(option);
+    }
+    rotationSelect.disabled = organizeWorking;
+    rotationSelect.addEventListener("change", () => {
+      entry.rotation = Number(rotationSelect.value) as OrganizeEntry["rotation"];
+      setOrganizeReadyStatus(`Page ${entry.page} rotation updated. Ready to export locally.`);
+    });
+    rotationLabel.append(rotationText, rotationSelect);
+
+    const actions = document.createElement("span");
+    actions.className = "file-actions";
+    const moveUp = fileActionButton(`Move source page ${entry.page} up`, "↑", () =>
+      moveOrganizePage(index, -1),
+    );
+    moveUp.disabled = index === 0 || organizeWorking;
+    const moveDown = fileActionButton(`Move source page ${entry.page} down`, "↓", () =>
+      moveOrganizePage(index, 1),
+    );
+    moveDown.disabled = index === organizeEntries.length - 1 || organizeWorking;
+    const remove = fileActionButton(`Remove source page ${entry.page}`, "×", () =>
+      removeOrganizePage(index),
+    );
+    remove.classList.add("remove-action");
+    remove.disabled = organizeWorking;
+    actions.append(moveUp, moveDown, remove);
+
+    item.append(order, details, rotationLabel, actions);
+    organizeList.append(item);
+  });
+
+  updateOrganizeControls();
+}
+
+function parsePageSelection(value: string, pageCount: number): number[] {
+  const parts = value.split(",").map((part) => part.trim());
+  if (parts.length === 0 || parts.some((part) => part.length === 0)) {
+    throw new Error("Enter a page number or range, such as 1-3,5.");
+  }
+
+  const selected: number[] = [];
+  for (const part of parts) {
+    const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(part);
+    if (!match) throw new Error(`“${part}” is not a page number or range.`);
+    const start = Number(match[1]);
+    const end = Number(match[2] ?? match[1]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+      throw new Error("A page number is too large.");
+    }
+    if (start < 1 || start > pageCount || end < 1 || end > pageCount) {
+      throw new Error(`Choose pages between 1 and ${pageCount}.`);
+    }
+    const direction = start <= end ? 1 : -1;
+    for (let page = start; ; page += direction) {
+      selected.push(page);
+      if (page === end) break;
+    }
+  }
+  return selected;
+}
+
+async function processOrganizeFile(file: File) {
+  if (!looksLikePdf(file)) {
+    setOrganizeStatus("Choose a PDF file to continue.", "error");
+    organizeFileInput.value = "";
+    return;
+  }
+  if (organizeLoading || organizeWorking || coreFailed) return;
+
+  organizeLoading = true;
+  organizeSource = null;
+  organizeEntries = [];
+  renderOrganizePages();
+  setOrganizeStatus(`Reading ${file.name} locally…`, "working");
+
+  try {
+    const pages = await countPages(await file.arrayBuffer());
+    if (pages === 0) throw new Error("This PDF has no pages to organize.");
+    organizeSource = { file, pageCount: pages };
+    organizeEntries = Array.from(
+      { length: pages },
+      (_, index): OrganizeEntry => ({ page: index + 1, rotation: 0 }),
+    );
+    renderOrganizePages();
+    setOrganizeStatus(
+      `${file.name} has ${pages} ${pages === 1 ? "page" : "pages"}. All pages are in the output list.`,
+      "success",
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "This PDF could not be read.";
+    setOrganizeStatus(message, "error");
+  } finally {
+    organizeLoading = false;
+    organizeFileInput.value = "";
+    updateOrganizeControls();
+  }
+}
+
+organizeFileInput.addEventListener("change", () => {
+  const [file] = organizeFileInput.files ?? [];
+  if (file) void processOrganizeFile(file);
+});
+wireDropZone(organizeDropZone, ([file]) => {
+  if (file) void processOrganizeFile(file);
+});
+
+pageAddForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!organizeSource || organizeWorking) return;
+  try {
+    const pages = parsePageSelection(pageRangeInput.value, organizeSource.pageCount);
+    organizeEntries.push(...pages.map((page): OrganizeEntry => ({ page, rotation: 0 })));
+    pageRangeInput.value = "";
+    renderOrganizePages();
+    setOrganizeReadyStatus(
+      `${pages.length} ${pages.length === 1 ? "page" : "pages"} added to the output.`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Those pages could not be added.";
+    setOrganizeStatus(message, "error");
+  }
+});
+
+resetPagesButton.addEventListener("click", () => {
+  if (!organizeSource || organizeWorking) return;
+  organizeEntries = Array.from(
+    { length: organizeSource.pageCount },
+    (_, index): OrganizeEntry => ({ page: index + 1, rotation: 0 }),
+  );
+  renderOrganizePages();
+  setOrganizeReadyStatus("All source pages restored in their original order.");
+});
+
+organizeButton.addEventListener("click", async () => {
+  if (!organizeSource || organizeEntries.length === 0 || organizeWorking || coreFailed) return;
+
+  organizeWorking = true;
+  renderOrganizePages();
+  setOrganizeStatus(
+    `Exporting ${organizeEntries.length} ${organizeEntries.length === 1 ? "page" : "pages"} locally…`,
+    "working",
+  );
+
+  try {
+    const organized = await organizeDocument(
+      await organizeSource.file.arrayBuffer(),
+      organizeEntries.map((entry) => entry.page),
+      organizeEntries.map((entry) => entry.rotation),
+    );
+    downloadPdf(organized, "organized.pdf");
+    setOrganizeStatus("Organized PDF ready — downloaded as organized.pdf.", "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The PDF could not be organized.";
+    setOrganizeStatus(message, "error");
+  } finally {
+    organizeWorking = false;
+    renderOrganizePages();
+  }
+});
+
+type Tool = "page-count" | "merge" | "organize";
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tool]"));
 const toolPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-panel]"));
 
@@ -379,7 +668,11 @@ function switchTool(tool: Tool) {
 
 for (const button of toolButtons) {
   button.addEventListener("click", () => {
-    if (button.dataset.tool === "page-count" || button.dataset.tool === "merge") {
+    if (
+      button.dataset.tool === "page-count" ||
+      button.dataset.tool === "merge" ||
+      button.dataset.tool === "organize"
+    ) {
       switchTool(button.dataset.tool);
     }
   });
@@ -387,7 +680,9 @@ for (const button of toolButtons) {
 
 setCountStatus("Drop a PDF to count its pages — it never leaves your device.", "ready");
 setMergeStatus("Add PDFs to begin — they never leave your device.", "ready");
+setOrganizeStatus("Choose a PDF to begin — it never leaves your device.", "ready");
 renderMergeFiles();
+renderOrganizePages();
 
 const themeToggle = document.querySelector<HTMLButtonElement>("#theme-toggle");
 const themeLabel = document.querySelector<HTMLSpanElement>("#theme-label");

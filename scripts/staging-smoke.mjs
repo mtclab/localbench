@@ -120,6 +120,30 @@ if (download) {
 }
 await page.screenshot({ path: `${OUT}/${ENGINE}-3-merge.png` });
 
+// --- 3c) ORGANIZE tool: load, add a range, export, verify page count ---
+await page.click('[data-tool="organize"]');
+check(await page.isVisible("#organize-panel"), "tool switcher shows organize panel");
+await page.setInputFiles("#organize-file-input", { name: "src50.pdf", mimeType: "application/pdf", buffer: await readFile(path.join(CORPUS, "big50.pdf")) });
+await page.waitForSelector("#organize-editor:not([hidden])", { timeout: 15000 }).catch(() => {});
+const d0 = await page.evaluate(() => document.querySelectorAll("#organize-list > li").length);
+await page.fill("#page-range-input", "1-3");
+await page.click("#add-pages-button");
+await page.waitForFunction((n) => document.querySelectorAll("#organize-list > li").length === n + 3, d0, { timeout: 8000 }).catch(() => {});
+const d1 = await page.evaluate(() => document.querySelectorAll("#organize-list > li").length);
+const [orgDl] = await Promise.all([
+  page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+  page.click("#organize-button"),
+]);
+if (orgDl) {
+  const op = path.join(OUT, `${ENGINE}-organized.pdf`);
+  await orgDl.saveAs(op);
+  await page.click('[data-tool="page-count"]');
+  const oc = await feed("organized.pdf", await readFile(op));
+  check(oc.state === "success" && (oc.text ?? "").startsWith(`${d1} page`), `organized export (${d0}+3) -> "${oc.text}" (expected ${d1})`);
+} else {
+  check(false, "organize produced a downloadable PDF");
+}
+
 // --- 4) theme toggle ---
 const before = await page.getAttribute("html", "data-theme");
 await page.click("#theme-toggle");
