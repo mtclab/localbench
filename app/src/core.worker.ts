@@ -1,16 +1,15 @@
 /// <reference lib="webworker" />
 
-import init, { core_version, pdf_page_count } from "./wasm/localbench_core.js";
+import init, { core_version, merge_pdfs, pdf_page_count } from "./wasm/localbench_core.js";
 
-type WorkerRequest = {
-  id: number;
-  type: "page-count";
-  bytes: ArrayBuffer;
-};
+type WorkerRequest =
+  | { id: number; type: "page-count"; bytes: ArrayBuffer }
+  | { id: number; type: "merge"; documents: ArrayBuffer[] };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
   | { type: "result"; id: number; pages: number }
+  | { type: "result"; id: number; bytes: ArrayBuffer }
   | { type: "error"; id?: number; message: string };
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -29,11 +28,22 @@ try {
 
 scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
-  if (request.type !== "page-count") return;
 
   try {
-    const pages = pdf_page_count(new Uint8Array(request.bytes));
-    scope.postMessage({ type: "result", id: request.id, pages } satisfies WorkerResponse);
+    if (request.type === "page-count") {
+      const pages = pdf_page_count(new Uint8Array(request.bytes));
+      scope.postMessage({ type: "result", id: request.id, pages } satisfies WorkerResponse);
+      return;
+    }
+
+    const merged = merge_pdfs(
+      request.documents.map((document) => new Uint8Array(document)),
+    );
+    const bytes = merged.slice().buffer;
+    scope.postMessage(
+      { type: "result", id: request.id, bytes } satisfies WorkerResponse,
+      [bytes],
+    );
   } catch (error) {
     scope.postMessage({
       type: "error",
@@ -42,4 +52,3 @@ scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
     } satisfies WorkerResponse);
   }
 });
-

@@ -229,6 +229,7 @@ name = "localbench_core"
 version = "0.1.0"
 dependencies = [
  "getrandom",
+ "js-sys",
  "lopdf",
  "wasm-bindgen",
 ]

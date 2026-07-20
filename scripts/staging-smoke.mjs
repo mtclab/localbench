@@ -96,6 +96,30 @@ const dropText = await page.textContent("#result-text");
 check((dropText ?? "").startsWith("50 page"), `real drop event -> "${dropText}" (expected 50)`);
 await page.screenshot({ path: `${OUT}/${ENGINE}-2-drop.png` });
 
+// --- 3b) MERGE tool: switch, add files, merge, verify merged page count ---
+await page.click('[data-tool="merge"]');
+const mergeShown = (await page.isVisible("#merge-panel")) && !(await page.isVisible("#page-count-panel"));
+check(mergeShown, "tool switcher shows merge panel, hides page-count");
+await page.setInputFiles("#merge-file-input", [
+  { name: "a-big50.pdf", mimeType: "application/pdf", buffer: await readFile(path.join(CORPUS, "big50.pdf")) },
+  { name: "b-single.pdf", mimeType: "application/pdf", buffer: await readFile(path.join(CORPUS, "single.pdf")) },
+]);
+await page.waitForFunction(() => document.querySelector("#merge-button") && !document.querySelector("#merge-button").disabled, { timeout: 10000 }).catch(() => {});
+const [download] = await Promise.all([
+  page.waitForEvent("download", { timeout: 30000 }).catch(() => null),
+  page.click("#merge-button"),
+]);
+if (download) {
+  const mergedPath = path.join(OUT, `${ENGINE}-merged.pdf`);
+  await download.saveAs(mergedPath);
+  await page.click('[data-tool="page-count"]');
+  const merged = await feed("merged.pdf", await readFile(mergedPath));
+  check(merged.state === "success" && (merged.text ?? "").startsWith("51 page"), `merged big50+single -> "${merged.text}" (expected 51)`);
+} else {
+  check(false, "merge produced a downloadable PDF");
+}
+await page.screenshot({ path: `${OUT}/${ENGINE}-3-merge.png` });
+
 // --- 4) theme toggle ---
 const before = await page.getAttribute("html", "data-theme");
 await page.click("#theme-toggle");

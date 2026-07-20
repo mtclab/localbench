@@ -9,6 +9,7 @@ description = "Deterministic, client-side document core for localbench"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+js-sys = { version = "0.3.77", default-features = false }
 lopdf = { version = "0.38.0", default-features = false }
 wasm-bindgen = "0.2.100"
 

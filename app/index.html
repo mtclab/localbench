@@ -24,7 +24,12 @@
       </a>
       <nav aria-label="Tools">
         <span class="nav-label">Tools</span>
-        <span class="nav-current" aria-current="page">PDF page count</span>
+        <button class="nav-tool" type="button" data-tool="page-count" aria-current="page">
+          PDF page count
+        </button>
+        <button class="nav-tool" type="button" data-tool="merge">
+          Merge PDFs
+        </button>
       </nav>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
         <span aria-hidden="true" id="theme-icon">◐</span>
@@ -33,9 +38,9 @@
     </header>
 
     <main>
-      <section class="hero" aria-labelledby="page-title">
+      <section class="hero tool-panel" id="page-count-panel" data-tool-panel="page-count" aria-labelledby="page-count-title">
         <p class="eyebrow">Private by construction</p>
-        <h1 id="page-title">Count PDF pages without uploading a thing.</h1>
+        <h1 id="page-count-title">Count PDF pages without uploading a thing.</h1>
         <p class="lede">
           Your file is processed by the localbench Rust core entirely in this browser.
           It never leaves your device.
@@ -53,6 +58,40 @@
         <div class="result" id="result" role="status" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span>
           <span id="result-text">Ready for a PDF</span>
+        </div>
+      </section>
+
+      <section class="hero tool-panel" id="merge-panel" data-tool-panel="merge" aria-labelledby="merge-title" hidden>
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="merge-title">Merge PDFs in the order you choose.</h1>
+        <p class="lede">
+          Add files, arrange them, and create one PDF in the local Rust core.
+          Every byte stays on this device.
+        </p>
+
+        <div class="drop-zone merge-drop-zone" id="merge-drop-zone">
+          <input id="merge-file-input" type="file" accept="application/pdf,.pdf" multiple />
+          <label for="merge-file-input">
+            <span class="drop-icon" aria-hidden="true">+</span>
+            <span class="drop-title">Drop PDFs here</span>
+            <span class="drop-detail">or choose multiple files from your device</span>
+          </label>
+        </div>
+
+        <section class="merge-queue" id="merge-queue" aria-labelledby="merge-queue-title" hidden>
+          <div class="merge-queue-header">
+            <h2 id="merge-queue-title">Files to merge</h2>
+            <span id="merge-summary"></span>
+          </div>
+          <ol class="merge-list" id="merge-list"></ol>
+          <button class="primary-action" id="merge-button" type="button" disabled>
+            Merge PDFs
+          </button>
+        </section>
+
+        <div class="result" id="merge-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="merge-result-text">Add PDFs to begin — they never leave your device.</span>
         </div>
       </section>
 
@@ -77,4 +116,3 @@
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
-
