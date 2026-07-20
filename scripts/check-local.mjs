@@ -48,8 +48,16 @@ function maskExpectedInertUrls(relative, contents) {
         (tag) => tag.replace("https://pdf.keeplocal.tools/", ""),
       )
       .replace(
+        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/img\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://img.keeplocal.tools/", ""),
+      )
+      .replace(
         /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
         (tag) => tag.replace("https://pdf.keeplocal.tools/", ""),
+      )
+      .replace(
+        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/img\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://img.keeplocal.tools/", ""),
       )
       .replace(
         /<a\b(?=[^>]*\bhref=["']https:\/\/github\.com\/mtclab\/localbench["'])[^>]*>/gi,
@@ -60,22 +68,33 @@ function maskExpectedInertUrls(relative, contents) {
         (block) =>
           block
             .replace("https://schema.org", "")
-            .replace("https://pdf.keeplocal.tools/", ""),
+            .replace("https://pdf.keeplocal.tools/", "")
+            .replace("https://img.keeplocal.tools/", ""),
       );
   }
 
   if (relative === "sitemap.xml") {
-    return contents.replace(
-      /<loc>https:\/\/pdf\.keeplocal\.tools\/<\/loc>/gi,
-      "<loc></loc>",
-    );
+    return contents
+      .replace(
+        /<loc>https:\/\/pdf\.keeplocal\.tools\/<\/loc>/gi,
+        "<loc></loc>",
+      )
+      .replace(
+        /<loc>https:\/\/img\.keeplocal\.tools\/<\/loc>/gi,
+        "<loc></loc>",
+      );
   }
 
   if (relative === "robots.txt") {
-    return contents.replace(
-      /^Sitemap:\s+https:\/\/pdf\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
-      "Sitemap:",
-    );
+    return contents
+      .replace(
+        /^Sitemap:\s+https:\/\/pdf\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
+        "Sitemap:",
+      )
+      .replace(
+        /^Sitemap:\s+https:\/\/img\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
+        "Sitemap:",
+      );
   }
 
   return contents;
