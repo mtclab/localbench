@@ -181,8 +181,14 @@ check(external.length === 0, `zero external network requests (found ${external.l
 // bug: these apps ship zero inline executable scripts, so any "inline script
 // violates CSP" error can only be a third-party injection. Treat that exact
 // violation as expected; still surface the count so it never hides a real one.
+// Engine-agnostic: Chromium ("inline script violates ... Content Security Policy
+// directive 'script-src'"), Firefox ("Content-Security-Policy: ... blocked an
+// inline script (script-src-elem)"), and WebKit ("Refused to execute a script ...
+// script-src directive of the Content Security Policy") all word it differently.
 const isExpectedCspBlock = (m) =>
-  /Content Security Policy directive ['"]?script-src/i.test(m) && /inline script/i.test(m);
+  /content[-\s]security[-\s]policy/i.test(m) &&
+  /script-src/i.test(m) &&
+  /(inline script|refused to execute|blocked an inline|violates)/i.test(m);
 const expectedCspBlocks = consoleErrors.filter(isExpectedCspBlock);
 const functionalConsoleErrors = consoleErrors.filter((m) => !isExpectedCspBlock(m));
 if (expectedCspBlocks.length) {
