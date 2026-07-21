@@ -52,6 +52,10 @@ function maskExpectedInertUrls(relative, contents) {
         (tag) => tag.replace("https://img.keeplocal.tools/", ""),
       )
       .replace(
+        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/img2pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://img2pdf.keeplocal.tools/", ""),
+      )
+      .replace(
         /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/zip\.keeplocal\.tools\/["'])[^>]*>/gi,
         (tag) => tag.replace("https://zip.keeplocal.tools/", ""),
       )
@@ -66,6 +70,10 @@ function maskExpectedInertUrls(relative, contents) {
       .replace(
         /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/img\.keeplocal\.tools\/["'])[^>]*>/gi,
         (tag) => tag.replace("https://img.keeplocal.tools/", ""),
+      )
+      .replace(
+        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/img2pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://img2pdf.keeplocal.tools/", ""),
       )
       .replace(
         /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/zip\.keeplocal\.tools\/["'])[^>]*>/gi,
@@ -86,6 +94,7 @@ function maskExpectedInertUrls(relative, contents) {
             .replace("https://schema.org", "")
             .replace("https://pdf.keeplocal.tools/", "")
             .replace("https://img.keeplocal.tools/", "")
+            .replace("https://img2pdf.keeplocal.tools/", "")
             .replace("https://zip.keeplocal.tools/", "")
             .replace("https://scrub.keeplocal.tools/", ""),
       );
@@ -99,6 +108,10 @@ function maskExpectedInertUrls(relative, contents) {
       )
       .replace(
         /<loc>https:\/\/img\.keeplocal\.tools\/<\/loc>/gi,
+        "<loc></loc>",
+      )
+      .replace(
+        /<loc>https:\/\/img2pdf\.keeplocal\.tools\/<\/loc>/gi,
         "<loc></loc>",
       )
       .replace(
@@ -119,6 +132,10 @@ function maskExpectedInertUrls(relative, contents) {
       )
       .replace(
         /^Sitemap:\s+https:\/\/img\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
+        "Sitemap:",
+      )
+      .replace(
+        /^Sitemap:\s+https:\/\/img2pdf\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
         "Sitemap:",
       )
       .replace(

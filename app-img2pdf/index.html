@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta
+      name="description"
+      content="Combine JPG, PNG, GIF, BMP, and WebP images into a metadata-clean PDF privately in your browser."
+    />
+    <link rel="canonical" href="https://img2pdf.keeplocal.tools/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="localbench" />
+    <meta property="og:title" content="Images to PDF — localbench" />
+    <meta
+      property="og:description"
+      content="Create a private, metadata-clean PDF from images entirely in your browser. Your files never leave your device."
+    />
+    <meta property="og:url" content="https://img2pdf.keeplocal.tools/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Images to PDF — localbench" />
+    <meta
+      name="twitter:description"
+      content="Create a private, metadata-clean PDF from images entirely in your browser. Your files never leave your device."
+    />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Images to PDF — localbench</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "localbench — Images to PDF",
+        "url": "https://img2pdf.keeplocal.tools/",
+        "description": "Combine images into a metadata-clean PDF entirely in the browser.",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with WebAssembly support",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-cluster">
+        <a class="brand" href="/" aria-label="localbench home">
+          <span class="brand-mark" aria-hidden="true">lb</span>
+          <span>localbench</span>
+        </a>
+        <button
+          class="local-badge"
+          id="local-badge"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="local-inspector"
+          aria-label="Open verified local privacy inspector"
+        >
+          <span aria-hidden="true">🔒</span>
+          <span>Verified local</span>
+        </button>
+      </div>
+      <nav class="tool-navigation" aria-label="Current tool">
+        <span class="nav-label">Images → PDF</span>
+      </nav>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
+        <span aria-hidden="true" id="theme-icon">◐</span>
+        <span id="theme-label">Theme</span>
+      </button>
+    </header>
+
+    <dialog
+      class="local-inspector"
+      id="local-inspector"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-inspector-title"
+      aria-describedby="local-inspector-description"
+    >
+      <div class="inspector-content">
+        <div class="inspector-header">
+          <div>
+            <p class="card-kicker">Live privacy proof</p>
+            <h2 id="local-inspector-title">Verified local</h2>
+          </div>
+          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close privacy inspector">×</button>
+        </div>
+        <p id="local-inspector-description">
+          These checks come from this browser session, not from a server claim.
+        </p>
+        <dl class="proof-list">
+          <div>
+            <dt>External requests since load</dt>
+            <dd id="external-request-count">0</dd>
+          </div>
+          <div class="proof-code-row">
+            <dt>Active connection policy</dt>
+            <dd><code id="csp-connect-src">connect-src 'self'</code></dd>
+          </div>
+          <div>
+            <dt>Offline page control</dt>
+            <dd id="offline-control-status">Checking…</dd>
+          </div>
+        </dl>
+        <p class="proof-explanation">
+          <code>connect-src 'self'</code> allows app connections only to this static origin, blocking uploads to external services.
+        </p>
+        <a class="source-link" href="https://github.com/mtclab/localbench" target="_blank" rel="noopener noreferrer">Read the source <span aria-hidden="true">↗</span></a>
+      </div>
+    </dialog>
+
+    <main>
+      <section class="hero tool-panel" aria-labelledby="create-title">
+        <p class="eyebrow">Private by construction</p>
+        <h1 id="create-title">Turn images into a PDF without uploading them.</h1>
+        <p class="lede">
+          Arrange JPG, PNG, GIF, BMP, or WebP images and create one PDF page per image.
+          Photos are stripped of EXIF and GPS data inside this tab.
+        </p>
+
+        <div class="drop-zone merge-drop-zone" id="create-drop-zone">
+          <input
+            id="create-file-input"
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,image/gif,image/bmp,image/webp"
+          />
+          <label for="create-file-input">
+            <span class="drop-icon" aria-hidden="true">＋</span>
+            <span class="drop-title">Drop images here</span>
+            <span class="drop-detail">or choose images from your device</span>
+          </label>
+        </div>
+
+        <section class="merge-queue" id="create-editor" aria-labelledby="create-editor-title" hidden>
+          <div class="merge-queue-header">
+            <h2 id="create-editor-title">Images in page order</h2>
+            <span id="create-total">0 images · 0 B</span>
+          </div>
+          <ul class="merge-list" id="create-file-list"></ul>
+
+          <div class="rotation-control page-size-control">
+            <label for="page-size">Page size</label>
+            <select id="page-size">
+              <option value="fit" selected>Match image size</option>
+              <option value="a4">A4</option>
+              <option value="letter">Letter</option>
+            </select>
+          </div>
+
+          <button class="primary-action" id="create-button" type="button" disabled>Create PDF</button>
+
+          <div class="compress-output" id="create-output" hidden>
+            <dl class="compression-stats pdf-stats" aria-label="Created PDF summary">
+              <div><dt>Pages</dt><dd id="create-output-count">—</dd></div>
+              <div><dt>PDF size</dt><dd id="create-output-size">—</dd></div>
+              <div><dt>Metadata</dt><dd>Cleaned</dd></div>
+            </dl>
+            <p class="compress-scope">
+              Photos are EXIF/GPS-cleaned and no timestamps are stored.
+            </p>
+            <button class="secondary-action download-action" id="create-download-button" type="button">
+              Download combined.pdf
+            </button>
+          </div>
+        </section>
+
+        <div class="result" id="create-result" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="create-result-text">Choose images to begin — they never leave your device.</span>
+        </div>
+      </section>
+
+      <aside class="trust-card" aria-labelledby="trust-title">
+        <p class="card-kicker">Local-only guarantee</p>
+        <h2 id="trust-title">The browser blocks uploads.</h2>
+        <p>
+          A strict Content Security Policy permits connections only to this static origin.
+          Once cached, localbench works offline too.
+        </p>
+        <dl>
+          <div><dt>Core</dt><dd id="core-version">Loading…</dd></div>
+          <div><dt>Processing</dt><dd>On this device</dd></div>
+          <div><dt>Account</dt><dd>Not needed</dd></div>
+        </dl>
+      </aside>
+    </main>
+
+    <footer>
+      <p>No uploads. No tracking. Just local tools.</p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

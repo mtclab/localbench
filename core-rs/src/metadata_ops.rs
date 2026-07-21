@@ -331,6 +331,16 @@ fn walk_jpeg(bytes: &[u8], strip: bool) -> Result<(Vec<MetadataItem>, Vec<u8>), 
     Err("Could not read this truncated JPEG.".to_owned())
 }
 
+/// Remove user metadata marker classes while preserving the JPEG's encoded
+/// image data and decode-critical APP0/APP2/APP14 segments byte-for-byte.
+/// Callers that merely need a best-effort sanitized JPEG keep the source if
+/// the marker stream cannot be walked safely.
+pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Vec<u8> {
+    walk_jpeg(bytes, true)
+        .map(|(_, stripped)| stripped)
+        .unwrap_or_else(|_| bytes.to_vec())
+}
+
 fn inspect_jpeg(bytes: &[u8]) -> Result<Vec<MetadataItem>, String> {
     image_dimensions(bytes, ImageFormat::Jpeg)?;
     walk_jpeg(bytes, false).map(|(items, _)| items)
