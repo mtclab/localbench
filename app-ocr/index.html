@@ -10,7 +10,7 @@
     <meta name="theme-color" content="#f5f7fb" />
     <meta
       name="description"
-      content="Extract printed English text from images privately in your browser. No uploads, accounts, or tracking."
+      content="Extract printed English text or create a searchable PDF privately in your browser. No uploads, accounts, or tracking."
     />
     <link rel="canonical" href="https://ocr.keeplocal.tools/" />
     <meta property="og:type" content="website" />
@@ -36,7 +36,7 @@
         "@type": "WebApplication",
         "name": "localbench — Private Image OCR",
         "url": "https://ocr.keeplocal.tools/",
-        "description": "Extract printed English text from images entirely in the browser.",
+        "description": "Extract printed English text or create searchable PDFs entirely in the browser.",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Any",
         "browserRequirements": "Requires a modern browser with WebAssembly and Web Worker support",
@@ -151,6 +151,16 @@
             <img id="ocr-preview" alt="" hidden />
             <figcaption id="ocr-preview-detail">Local preview</figcaption>
           </figure>
+          <fieldset class="output-mode" aria-describedby="output-mode-help">
+            <legend>Output mode</legend>
+            <div class="segmented-control">
+              <input id="output-mode-text" name="output-mode" type="radio" value="text" checked />
+              <label for="output-mode-text">Extracted text</label>
+              <input id="output-mode-pdf" name="output-mode" type="radio" value="pdf" />
+              <label for="output-mode-pdf">Searchable PDF</label>
+            </div>
+            <p id="output-mode-help">Choose editable text or an image PDF with a hidden text layer.</p>
+          </fieldset>
           <button class="primary-action" id="extract-button" type="button" disabled>Extract text</button>
         </section>
 
@@ -178,6 +188,18 @@
             </div>
           </div>
           <textarea id="ocr-text" readonly spellcheck="false" aria-label="Recognized text"></textarea>
+        </section>
+
+        <section class="pdf-output" id="ocr-pdf-output" aria-labelledby="ocr-pdf-output-title" hidden>
+          <div class="output-header">
+            <div>
+              <h2 id="ocr-pdf-output-title">Searchable PDF ready</h2>
+              <p>The image with a hidden, selectable text layer — search or copy the text from any PDF viewer.</p>
+            </div>
+            <div class="output-actions">
+              <button class="secondary-action" id="pdf-download-button" type="button">Download PDF</button>
+            </div>
+          </div>
         </section>
       </section>
 

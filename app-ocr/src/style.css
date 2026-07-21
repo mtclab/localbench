@@ -403,7 +403,8 @@ h1 {
 }
 
 .ocr-editor,
-.text-output {
+.text-output,
+.pdf-output {
   margin-top: 18px;
   padding: 18px;
   border: 1px solid var(--line);
@@ -474,6 +475,69 @@ h1 {
   color: var(--muted);
   font-size: 0.82rem;
   text-align: center;
+}
+
+.output-mode {
+  min-width: 0;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.output-mode legend {
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+}
+
+.segmented-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.segmented-control label {
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 750;
+  text-align: center;
+  cursor: pointer;
+}
+
+.segmented-control input:checked + label {
+  background: var(--surface);
+  color: var(--accent-strong);
+  box-shadow: 0 2px 8px rgb(25 42 70 / 10%);
+}
+
+.segmented-control input:focus-visible + label {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.segmented-control input:disabled + label {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.output-mode p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
 .primary-action {

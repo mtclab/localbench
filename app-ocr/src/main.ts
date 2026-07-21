@@ -2,12 +2,14 @@ import "./style.css";
 
 type WorkerRequest =
   | { id: number; type: "loadModels"; detection: ArrayBuffer; recognition: ArrayBuffer }
-  | { id: number; type: "ocr"; image: ArrayBuffer };
+  | { id: number; type: "ocr"; image: ArrayBuffer }
+  | { id: number; type: "searchablePdf"; image: ArrayBuffer };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
   | { type: "modelsLoaded"; id: number }
   | { type: "text"; id: number; text: string }
+  | { type: "pdf"; id: number; bytes: ArrayBuffer }
   | { type: "error"; id?: number; message: string };
 
 type RequestResponse = Extract<WorkerResponse, { id: number }>;
@@ -49,13 +51,17 @@ const sourceSize = requiredElement<HTMLSpanElement>("#ocr-source-size");
 const preview = requiredElement<HTMLImageElement>("#ocr-preview");
 const previewDetail = requiredElement<HTMLElement>("#ocr-preview-detail");
 const extractButton = requiredElement<HTMLButtonElement>("#extract-button");
+const textModeInput = requiredElement<HTMLInputElement>("#output-mode-text");
+const pdfModeInput = requiredElement<HTMLInputElement>("#output-mode-pdf");
 const loadEngineButton = requiredElement<HTMLButtonElement>("#load-engine-button");
 const status = requiredElement<HTMLDivElement>("#ocr-status");
 const statusText = requiredElement<HTMLSpanElement>("#ocr-status-text");
-const output = requiredElement<HTMLElement>("#ocr-output");
+const textOutput = requiredElement<HTMLElement>("#ocr-output");
 const recognizedText = requiredElement<HTMLTextAreaElement>("#ocr-text");
 const copyButton = requiredElement<HTMLButtonElement>("#copy-button");
 const downloadButton = requiredElement<HTMLButtonElement>("#download-button");
+const pdfOutput = requiredElement<HTMLElement>("#ocr-pdf-output");
+const pdfDownloadButton = requiredElement<HTMLButtonElement>("#pdf-download-button");
 const version = requiredElement<HTMLElement>("#core-version");
 const engineStatus = requiredElement<HTMLElement>("#engine-status");
 
@@ -173,6 +179,15 @@ async function recognizeInWorker(image: ArrayBuffer): Promise<string> {
   return response.text;
 }
 
+async function createSearchablePdfInWorker(image: ArrayBuffer): Promise<ArrayBuffer> {
+  const id = nextRequestId++;
+  const response = await workerRequest({ id, type: "searchablePdf", image }, [image]);
+  if (response.type !== "pdf") {
+    throw new Error("The OCR worker returned an unexpected PDF response.");
+  }
+  return response.bytes;
+}
+
 function setStatus(text: string, state: StatusState) {
   statusText.textContent = text;
   status.dataset.state = state;
@@ -190,12 +205,24 @@ let engineLoaded = false;
 let engineLoading = false;
 let engineLoadPromise: Promise<void> | null = null;
 let ocrWorking = false;
+type OutputMode = "text" | "pdf";
+let outputMode: OutputMode = "text";
+let pdfDownloadUrl: string | null = null;
+let pdfDownloadName = "searchable.pdf";
 
 function updateControls() {
   const busy = engineLoading || ocrWorking;
   fileInput.disabled = busy || !workerAvailable;
   extractButton.disabled = busy || !workerAvailable || selectedImage === null;
-  extractButton.textContent = ocrWorking ? "Extracting text…" : "Extract text";
+  textModeInput.disabled = busy;
+  pdfModeInput.disabled = busy;
+  extractButton.textContent = ocrWorking
+    ? outputMode === "text"
+      ? "Extracting text…"
+      : "Creating searchable PDF…"
+    : outputMode === "text"
+      ? "Extract text"
+      : "Create searchable PDF";
   loadEngineButton.disabled = busy || !workerAvailable || engineLoaded;
   loadEngineButton.textContent = engineLoaded
     ? "OCR engine ready"
@@ -204,13 +231,38 @@ function updateControls() {
       : "Load OCR engine";
   copyButton.disabled = ocrWorking || recognizedText.value.length === 0;
   downloadButton.disabled = ocrWorking || recognizedText.value.length === 0;
+  pdfDownloadButton.disabled = ocrWorking || pdfDownloadUrl === null;
+}
+
+function revokePdfDownload() {
+  if (!pdfDownloadUrl) return;
+  URL.revokeObjectURL(pdfDownloadUrl);
+  pdfDownloadUrl = null;
 }
 
 function clearOutput() {
+  revokePdfDownload();
   recognizedText.value = "";
-  output.hidden = true;
+  textOutput.hidden = true;
+  pdfOutput.hidden = true;
   copyButton.textContent = "Copy";
   updateControls();
+}
+
+for (const input of [textModeInput, pdfModeInput]) {
+  input.addEventListener("change", () => {
+    if (!input.checked) return;
+    outputMode = input.value as OutputMode;
+    clearOutput();
+    if (selectedImage) {
+      setStatus(
+        `${selectedImage.file.name} is ready for ${
+          outputMode === "text" ? "text extraction" : "a searchable PDF"
+        }.`,
+        "ready",
+      );
+    }
+  });
 }
 
 function isSupportedImage(file: File): boolean {
@@ -443,21 +495,42 @@ extractButton.addEventListener("click", async () => {
 
   try {
     await ensureEngine();
-    setStatus(`Extracting text from ${selectedImage.file.name} locally…`, "working");
-    const text = await recognizeInWorker(await selectedImage.file.arrayBuffer());
-    recognizedText.value = text;
-    output.hidden = false;
-    if (text.trim().length === 0) {
-      setStatus(
-        "OCR finished, but no text was recognized. Try a clearer, straighter image.",
-        "ready",
-      );
+    if (outputMode === "text") {
+      setStatus(`Extracting text from ${selectedImage.file.name} locally…`, "working");
+      const text = await recognizeInWorker(await selectedImage.file.arrayBuffer());
+      recognizedText.value = text;
+      textOutput.hidden = false;
+      if (text.trim().length === 0) {
+        setStatus(
+          "OCR finished, but no text was recognized. Try a clearer, straighter image.",
+          "ready",
+        );
+      } else {
+        setStatus(
+          "Text extracted locally. This is early-preview OCR — check the result.",
+          "success",
+        );
+      }
     } else {
-      setStatus("Text extracted locally. This is early-preview OCR — check the result.", "success");
+      setStatus(`Creating a searchable PDF from ${selectedImage.file.name} locally…`, "working");
+      const bytes = await createSearchablePdfInWorker(
+        await selectedImage.file.arrayBuffer(),
+      );
+      pdfDownloadUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      pdfDownloadName = searchablePdfFilename(selectedImage.file.name);
+      pdfOutput.hidden = false;
+      setStatus(
+        "Searchable PDF created locally. This is early-preview OCR — check the result.",
+        "success",
+      );
     }
   } catch (error) {
     setStatus(
-      error instanceof Error ? error.message : "Text could not be extracted from this image.",
+      error instanceof Error
+        ? error.message
+        : outputMode === "text"
+          ? "Text could not be extracted from this image."
+          : "A searchable PDF could not be created from this image.",
       "error",
     );
   } finally {
@@ -496,6 +569,10 @@ function textFilename(filename: string): string {
   return `${filename.replace(/\.[^./]+$/, "") || "recognized-text"}.txt`;
 }
 
+function searchablePdfFilename(filename: string): string {
+  return `${filename.replace(/\.[^./]+$/, "") || "image"}-searchable.pdf`;
+}
+
 downloadButton.addEventListener("click", () => {
   if (!selectedImage || recognizedText.value.length === 0) return;
   const url = URL.createObjectURL(
@@ -509,6 +586,17 @@ downloadButton.addEventListener("click", () => {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+});
+
+pdfDownloadButton.addEventListener("click", () => {
+  if (!pdfDownloadUrl) return;
+  const link = document.createElement("a");
+  link.href = pdfDownloadUrl;
+  link.download = pdfDownloadName;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
 });
 
 const localBadge = requiredElement<HTMLButtonElement>("#local-badge");
@@ -629,6 +717,7 @@ themeToggle.addEventListener("click", () => {
 
 window.addEventListener("beforeunload", () => {
   if (selectedImage) URL.revokeObjectURL(selectedImage.previewUrl);
+  revokePdfDownload();
   worker.terminate();
 });
 

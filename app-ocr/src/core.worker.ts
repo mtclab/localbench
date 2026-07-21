@@ -5,16 +5,19 @@ import init, {
   engine_ready,
   load_engine,
   run_ocr,
+  searchable_pdf,
 } from "./wasm/localbench_ocr_core.js";
 
 type WorkerRequest =
   | { id: number; type: "loadModels"; detection: ArrayBuffer; recognition: ArrayBuffer }
-  | { id: number; type: "ocr"; image: ArrayBuffer };
+  | { id: number; type: "ocr"; image: ArrayBuffer }
+  | { id: number; type: "searchablePdf"; image: ArrayBuffer };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
   | { type: "modelsLoaded"; id: number }
   | { type: "text"; id: number; text: string }
+  | { type: "pdf"; id: number; bytes: ArrayBuffer }
   | { type: "error"; id?: number; message: string };
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -51,8 +54,18 @@ scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (!engine_ready()) throw new Error("The OCR engine is not loaded.");
-    const text = run_ocr(new Uint8Array(request.image));
-    scope.postMessage({ type: "text", id: request.id, text } satisfies WorkerResponse);
+    if (request.type === "ocr") {
+      const text = run_ocr(new Uint8Array(request.image));
+      scope.postMessage({ type: "text", id: request.id, text } satisfies WorkerResponse);
+      return;
+    }
+
+    const pdf = searchable_pdf(new Uint8Array(request.image));
+    const bytes = pdf.slice().buffer;
+    scope.postMessage(
+      { type: "pdf", id: request.id, bytes } satisfies WorkerResponse,
+      [bytes],
+    );
   } catch (error) {
     scope.postMessage({
       type: "error",
