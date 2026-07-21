@@ -56,6 +56,10 @@ function maskExpectedInertUrls(relative, contents) {
         (tag) => tag.replace("https://zip.keeplocal.tools/", ""),
       )
       .replace(
+        /<link\b(?=[^>]*\brel=["']canonical["'])(?=[^>]*\bhref=["']https:\/\/scrub\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://scrub.keeplocal.tools/", ""),
+      )
+      .replace(
         /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/pdf\.keeplocal\.tools\/["'])[^>]*>/gi,
         (tag) => tag.replace("https://pdf.keeplocal.tools/", ""),
       )
@@ -68,6 +72,10 @@ function maskExpectedInertUrls(relative, contents) {
         (tag) => tag.replace("https://zip.keeplocal.tools/", ""),
       )
       .replace(
+        /<meta\b(?=[^>]*\bproperty=["']og:url["'])(?=[^>]*\bcontent=["']https:\/\/scrub\.keeplocal\.tools\/["'])[^>]*>/gi,
+        (tag) => tag.replace("https://scrub.keeplocal.tools/", ""),
+      )
+      .replace(
         /<a\b(?=[^>]*\bhref=["']https:\/\/github\.com\/mtclab\/localbench["'])[^>]*>/gi,
         (tag) => tag.replace("https://github.com/mtclab/localbench", ""),
       )
@@ -78,7 +86,8 @@ function maskExpectedInertUrls(relative, contents) {
             .replace("https://schema.org", "")
             .replace("https://pdf.keeplocal.tools/", "")
             .replace("https://img.keeplocal.tools/", "")
-            .replace("https://zip.keeplocal.tools/", ""),
+            .replace("https://zip.keeplocal.tools/", "")
+            .replace("https://scrub.keeplocal.tools/", ""),
       );
   }
 
@@ -95,6 +104,10 @@ function maskExpectedInertUrls(relative, contents) {
       .replace(
         /<loc>https:\/\/zip\.keeplocal\.tools\/<\/loc>/gi,
         "<loc></loc>",
+      )
+      .replace(
+        /<loc>https:\/\/scrub\.keeplocal\.tools\/<\/loc>/gi,
+        "<loc></loc>",
       );
   }
 
@@ -110,6 +123,10 @@ function maskExpectedInertUrls(relative, contents) {
       )
       .replace(
         /^Sitemap:\s+https:\/\/zip\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
+        "Sitemap:",
+      )
+      .replace(
+        /^Sitemap:\s+https:\/\/scrub\.keeplocal\.tools\/sitemap\.xml\s*$/gim,
         "Sitemap:",
       );
   }
