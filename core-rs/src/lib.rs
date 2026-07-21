@@ -6,9 +6,11 @@ use zune_jpeg::{
     JpegDecoder,
 };
 
+mod archive_ops;
 mod image_ops;
 mod metadata_ops;
 
+pub use archive_ops::{create_zip, extract_zip_entry, list_zip};
 pub use image_ops::{compress_image, convert_image, resize_image};
 pub use metadata_ops::{inspect_metadata, scrub_metadata};
 
