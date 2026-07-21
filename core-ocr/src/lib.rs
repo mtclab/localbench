@@ -206,6 +206,47 @@ fn pdf_real(value: f32) -> Object {
     Object::Real(value)
 }
 
+/// Map Unicode text to WinAnsi (CP1252) bytes for the PDF text layer (the font is
+/// declared WinAnsiEncoding). ocrs emits Latin-script text; the direct ranges cover
+/// ASCII + Latin-1, the arms cover CP1252's printable 0x80–0x9F slots, and anything
+/// else becomes '?' — this affects only the invisible/searchable layer, never the
+/// visible image, so a rare unmappable glyph degrades search, not the document.
+fn to_winansi(text: &str) -> Vec<u8> {
+    text.chars()
+        .map(|c| match c as u32 {
+            0x00..=0x7F | 0xA0..=0xFF => c as u8,
+            0x20AC => 0x80,
+            0x201A => 0x82,
+            0x0192 => 0x83,
+            0x201E => 0x84,
+            0x2026 => 0x85,
+            0x2020 => 0x86,
+            0x2021 => 0x87,
+            0x02C6 => 0x88,
+            0x2030 => 0x89,
+            0x0160 => 0x8A,
+            0x2039 => 0x8B,
+            0x0152 => 0x8C,
+            0x017D => 0x8E,
+            0x2018 => 0x91,
+            0x2019 => 0x92,
+            0x201C => 0x93,
+            0x201D => 0x94,
+            0x2022 => 0x95,
+            0x2013 => 0x96,
+            0x2014 => 0x97,
+            0x02DC => 0x98,
+            0x2122 => 0x99,
+            0x0161 => 0x9A,
+            0x203A => 0x9B,
+            0x0153 => 0x9C,
+            0x017E => 0x9E,
+            0x0178 => 0x9F,
+            _ => b'?',
+        })
+        .collect()
+}
+
 fn append_escaped_pdf_literal(output: &mut Vec<u8>, text: &[u8]) {
     for &byte in text {
         match byte {
@@ -239,6 +280,9 @@ fn build_searchable_pdf(
         "Type" => "Font",
         "Subtype" => "Type1",
         "BaseFont" => "Helvetica",
+        // The text-layer bytes are WinAnsi (CP1252); declaring the encoding makes
+        // accented Latin text (café, Hämeenlinna, …) extract/search correctly.
+        "Encoding" => "WinAnsiEncoding",
     });
     let image_id = document.add_object(Stream::new(
         dictionary! {
@@ -276,7 +320,7 @@ fn build_searchable_pdf(
     .map_err(|error| format!("Could not encode the PDF page content: {error}"))?;
 
     for word in words {
-        let font_size = word.height.max(1.0);
+        let font_size = word.height.max(1.0).min(page_height);
         // Fit Helvetica's approximate advance to the detected word rectangle.
         // This makes selection highlights follow the image text more closely.
         let char_count = word.text.chars().count().max(1) as f32;
@@ -304,7 +348,7 @@ fn build_searchable_pdf(
             .map_err(|error| format!("Could not encode the PDF text layer: {error}"))?,
         );
         content.extend_from_slice(b"\n(");
-        append_escaped_pdf_literal(&mut content, word.text.as_bytes());
+        append_escaped_pdf_literal(&mut content, &to_winansi(&word.text));
         content.extend_from_slice(b") Tj\nET");
     }
 
@@ -419,6 +463,20 @@ mod tests {
     #[test]
     fn engine_is_not_ready_before_load() {
         assert!(!engine_ready());
+    }
+
+    #[test]
+    fn winansi_transcodes_latin_and_specials_and_drops_the_rest() {
+        assert_eq!(to_winansi("abc"), b"abc");
+        // Latin-1 accents used across European text map to their CP1252 bytes.
+        assert_eq!(to_winansi("café"), vec![b'c', b'a', b'f', 0xE9]);
+        assert_eq!(to_winansi("Hämeenlinna")[1], 0xE4); // ä
+        // CP1252 printable specials (euro, curly quotes, en dash).
+        assert_eq!(to_winansi("€"), vec![0x80]);
+        assert_eq!(to_winansi("\u{2019}"), vec![0x92]);
+        assert_eq!(to_winansi("\u{2013}"), vec![0x96]);
+        // Outside CP1252 (e.g. CJK) degrades to '?', never a raw multibyte blob.
+        assert_eq!(to_winansi("世"), vec![b'?']);
     }
 
     #[test]

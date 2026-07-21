@@ -91,6 +91,25 @@ if (dl) {
   check(tb.length > 0 && tokenHit(tb, GROUND_TRUTH) >= 0.85, "downloaded .txt has the recognized text");
 } else check(false, "download .txt produced a file");
 
+// --- 4b) SEARCHABLE PDF output mode ---
+await page.check("#output-mode-pdf").catch(async () => { await page.click("#output-mode-pdf"); });
+await page.click("#extract-button"); // "Create searchable PDF"
+await page.waitForFunction(() => {
+  const b = document.querySelector("#pdf-download-button");
+  return b && !b.disabled;
+}, { timeout: 45000 }).catch(() => {});
+const pdfDl = await Promise.all([
+  page.waitForEvent("download", { timeout: 15000 }).catch(() => null),
+  page.click("#pdf-download-button"),
+]).then(([d]) => d);
+if (pdfDl) {
+  const pp = path.join(OUT, `${ENGINE}-searchable.pdf`);
+  await pdfDl.saveAs(pp);
+  const pb = await readFile(pp);
+  check(pb.length > 5 && pb.toString("latin1", 0, 5) === "%PDF-", "searchable PDF is a valid PDF (%PDF-)");
+  check(pb.includes(Buffer.from("Helvetica")), "searchable PDF embeds a text-layer font (Helvetica)");
+} else check(false, "searchable PDF produced a download");
+
 // --- 5) models loaded same-origin => zero external ---
 check(external.length === 0, `zero external network requests — models are same-origin (found ${external.length}${external.length ? ": " + external.slice(0, 3).join(", ") : ""})`);
 
