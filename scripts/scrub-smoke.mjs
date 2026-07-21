@@ -60,6 +60,8 @@ await page.screenshot({ path: `${OUT}/${ENGINE}-1-loaded.png` });
 
 const photo = await readFile(path.join(CORPUS, "photo.jpg"));
 const tagged = await readFile(path.join(CORPUS, "tagged.png"));
+let ztxt = null;
+try { ztxt = await readFile(path.join(CORPUS, "ztxt.png")); } catch { /* optional */ }
 const clean = await readFile(path.join(CORPUS, "clean.png"));
 let doc = null;
 try { doc = await readFile(path.join(CORPUS, "doc.pdf")); } catch { /* optional */ }
@@ -119,6 +121,20 @@ if (tDl) {
   const { w, h } = pngDims(tb);
   check(w === 320 && h === 240, `scrubbed PNG dimensions unchanged (${w}x${h}, lossless)`);
 } else check(false, "tagged.png produced a scrubbed download");
+
+// --- 3b) PNG with a COMPRESSED zTXt: inspect INFLATES it (shows hidden GPS) ---
+if (ztxt) {
+  await load("ztxt.png", "image/png", ztxt);
+  check(await page.isVisible("text=GPSLatitude"),
+    "compressed zTXt is inflated in the browser and its hidden GPS text is shown");
+  const zDl = await scrubAndDownload();
+  if (zDl) {
+    const zb = await saveDownload(zDl, `${ENGINE}-ztxt-clean.png`);
+    check(isPng(zb) && !has(zb, "zTXt"), "scrubbed PNG has the zTXt chunk removed");
+  } else check(false, "ztxt.png produced a scrubbed download");
+} else {
+  console.log(`  SKIP  [${ENGINE}] ztxt.png not in corpus`);
+}
 
 // --- 4) PDF with /Info: inspect lists it, scrub strips, body survives ---
 if (doc) {

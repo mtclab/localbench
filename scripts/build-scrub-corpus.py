@@ -76,6 +76,23 @@ exif_chunk = png_chunk(b"eXIf", exif_payload)
 with open(os.path.join(out, "tagged.png"), "wb") as f:
     f.write(head + text + exif_chunk + tail)
 
+# --- ztxt.png: a COMPRESSED zTXt text chunk carrying GPS text ---------------
+# Proves the scrubber inflates compressed text to show what is hiding, not just
+# an opaque "(compressed)".
+zbase = Image.new("RGB", (200, 150), (40, 90, 160))
+ztmp = os.path.join(out, "_zt.png")
+zbase.save(ztmp)
+with open(ztmp, "rb") as f:
+    zraw = f.read()
+os.remove(ztmp)
+zihdr_end = 8 + 4 + 4 + 13 + 4
+ztext = b"Comment\x00\x00" + zlib.compress(
+    b"Exported from MtclabCam; GPSLatitude 60.17, GPSLongitude 24.94"
+)
+zchunk = png_chunk(b"zTXt", ztext)
+with open(os.path.join(out, "ztxt.png"), "wb") as f:
+    f.write(zraw[:zihdr_end] + zchunk + zraw[zihdr_end:])
+
 # --- clean.png: no ancillary metadata --------------------------------------
 Image.new("RGB", (64, 64), (10, 120, 200)).save(os.path.join(out, "clean.png"))
 
@@ -98,7 +115,12 @@ except Exception as exc:  # noqa: BLE001
     made_pdf = False
     print(f"WARN: reportlab missing, skipped doc.pdf ({exc})")
 
-made = ["photo.jpg (GPS EXIF+comment)", "tagged.png (tEXt+eXIf)", "clean.png (none)"]
+made = [
+    "photo.jpg (GPS EXIF+comment)",
+    "tagged.png (tEXt+eXIf)",
+    "ztxt.png (compressed zTXt+GPS)",
+    "clean.png (none)",
+]
 if made_pdf:
     made.append("doc.pdf (/Info)")
 print("wrote " + ", ".join(f"{out}/{m}" for m in made))

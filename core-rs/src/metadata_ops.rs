@@ -6,15 +6,20 @@
 //! ICC profiles are deliberately preserved because they affect compatibility
 //! and rendered color rather than carrying the metadata covered by this tool.
 //!
+//! PDF XMP packets are excised from stream content directly (not merely by
+//! dropping `/Metadata` references), so XMP is removed even when a stream is
+//! reachable through another reference. Compressed PNG text (zTXt / iTXt) is
+//! inflated so its contents can be inspected and judged, not just reported.
+//!
 //! ## Deferred
 //!
 //! - GIF, BMP, and WebP metadata: safe, lossless container surgery for those
 //!   formats is outside this slice.
-//! - Compressed PNG text inflation: zTXt and compressed iTXt are identified and
-//!   removed, but their values are reported as compressed rather than inflated.
 
-use std::{fmt::Write, io::Cursor};
+use std::{fmt::Write, io::Read};
+use std::io::Cursor;
 
+use flate2::read::ZlibDecoder;
 use image::{ImageFormat, ImageReader};
 use lopdf::{Dictionary, Document, Object};
 use wasm_bindgen::prelude::*;
@@ -24,6 +29,12 @@ use super::load_pdf;
 const SUPPORTED_FORMATS_ERROR: &str = "Metadata scrubbing supports PDF, JPEG, and PNG files.";
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_DETAIL_CHARS: usize = 160;
+/// Cap for inflating a compressed PNG text chunk, so a decompression bomb in a
+/// zTXt/iTXt value cannot exhaust memory while we inspect it.
+const MAX_INFLATED_TEXT: usize = 4_000_000;
+/// XMP packets are delimited by these processing-instruction markers.
+const XMP_PACKET_BEGIN: &[u8] = b"<?xpacket begin";
+const XMP_PACKET_END: &[u8] = b"<?xpacket end";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MetadataFormat {
@@ -351,6 +362,46 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
+/// Inflate a zlib stream, refusing to allocate beyond the bomb cap so a
+/// decompression bomb in a zTXt/iTXt value cannot exhaust memory.
+fn inflate_zlib_bounded(data: &[u8]) -> Option<Vec<u8>> {
+    let mut decoder = ZlibDecoder::new(data).take(MAX_INFLATED_TEXT as u64 + 1);
+    let mut output = Vec::new();
+    decoder.read_to_end(&mut output).ok()?;
+    if output.len() > MAX_INFLATED_TEXT {
+        return None;
+    }
+    Some(output)
+}
+
+/// Case-insensitive check for GPS/location markers in decoded text metadata.
+fn text_mentions_location(text: &str) -> bool {
+    let upper = text.to_ascii_uppercase();
+    upper.contains("GPS") || upper.contains("GEOLOCATION")
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Remove the first `<?xpacket begin ... ?> ... <?xpacket end ...?>` region from
+/// stream content, leaving any surrounding bytes intact. None if no complete
+/// packet is present.
+fn strip_xmp_packet(content: &[u8]) -> Option<Vec<u8>> {
+    let begin = find_subslice(content, XMP_PACKET_BEGIN)?;
+    let end_marker = find_subslice(&content[begin..], XMP_PACKET_END)? + begin;
+    let close = find_subslice(&content[end_marker..], b"?>")? + end_marker + 2;
+    let mut output = Vec::with_capacity(content.len() - (close - begin));
+    output.extend_from_slice(&content[..begin]);
+    output.extend_from_slice(&content[close..]);
+    Some(output)
+}
+
 fn png_keyword_sensitive(keyword: &str) -> bool {
     keyword.eq_ignore_ascii_case("XML:com.adobe.xmp")
         || keyword.to_ascii_uppercase().contains("GPS")
@@ -365,25 +416,45 @@ fn png_keyword(data: &[u8]) -> (&[u8], &[u8]) {
 
 fn png_text_item(chunk_type: &[u8; 4], data: &[u8]) -> MetadataItem {
     let (keyword_bytes, rest) = png_keyword(data);
-    let keyword = lossy_detail(keyword_bytes);
-    let sensitive = png_keyword_sensitive(&keyword);
-    let detail = match chunk_type {
-        b"tEXt" => Some(lossy_detail(rest)),
-        b"zTXt" => Some("(compressed)".to_owned()),
+    // Judge sensitivity on the FULL keyword (a valid PNG keyword is <=79 bytes,
+    // but a crafted one must not hide "GPS" past the display truncation point).
+    let keyword_full = String::from_utf8_lossy(keyword_bytes).into_owned();
+    let keyword = truncate_detail(&keyword_full);
+    let mut sensitive = png_keyword_sensitive(&keyword_full);
+
+    // Recover the actual text value, inflating compressed zTXt/iTXt so the tool
+    // shows what was hiding instead of an opaque "(compressed)".
+    let value: Option<String> = match chunk_type {
+        b"tEXt" => Some(String::from_utf8_lossy(rest).into_owned()),
+        // zTXt: keyword\0 + compression_method(1) + zlib stream.
+        b"zTXt" => rest
+            .get(1..)
+            .and_then(inflate_zlib_bounded)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+        // iTXt: keyword\0 + comp_flag(1) + comp_method(1) + language\0 + translated\0 + text.
         b"iTXt" => {
             let compression_flag = rest.first().copied();
-            let text = rest.get(2..).and_then(|language_and_text| {
+            let text = rest.get(2..).map(|language_and_text| {
                 let (_, translated_and_text) = png_keyword(language_and_text);
                 let (_, text) = png_keyword(translated_and_text);
-                (!text.is_empty()).then_some(text)
+                text.to_vec()
             });
-            if compression_flag == Some(0) {
-                text.map(lossy_detail)
-            } else {
-                Some("(compressed)".to_owned())
+            match (compression_flag, text) {
+                (Some(0), Some(text)) => Some(String::from_utf8_lossy(&text).into_owned()),
+                (Some(_), Some(text)) => inflate_zlib_bounded(&text)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+                _ => None,
             }
         }
         _ => None,
+    };
+
+    if value.as_deref().is_some_and(text_mentions_location) {
+        sensitive = true;
+    }
+    let detail = match value {
+        Some(text) => Some(truncate_detail(&text)),
+        None => Some("(unreadable compressed text)".to_owned()),
     };
     MetadataItem::new(format!("Text: {keyword}"), detail, sensitive)
 }
@@ -540,6 +611,25 @@ fn resolved_dictionary<'a>(document: &'a Document, value: &'a Object) -> Option<
         .and_then(|(_, object)| object.as_dict().ok())
 }
 
+fn stream_plain_content(stream: &lopdf::Stream) -> Vec<u8> {
+    stream
+        .get_plain_content()
+        .unwrap_or_else(|_| stream.content.clone())
+}
+
+/// Whether any stream object embeds an XMP packet, regardless of how it is
+/// referenced. This is what makes XMP removal (and its verification) complete:
+/// a `/Metadata` reference can be dropped while the stream lingers reachable
+/// through another key.
+fn document_has_xmp_packet(document: &Document) -> bool {
+    document.objects.values().any(|object| match object {
+        Object::Stream(stream) => {
+            find_subslice(&stream_plain_content(stream), XMP_PACKET_BEGIN).is_some()
+        }
+        _ => false,
+    })
+}
+
 fn pdf_metadata_link_count(document: &Document) -> usize {
     usize::from(document.trailer.get(b"Metadata").is_ok())
         + document
@@ -580,19 +670,17 @@ fn pdf_items(document: &Document) -> Result<Vec<MetadataItem>, String> {
     }
 
     let metadata_count = pdf_metadata_link_count(document);
-    if metadata_count > 0 {
-        items.push(MetadataItem::new(
-            "XMP metadata",
-            Some(format!(
+    let embedded_xmp = document_has_xmp_packet(document);
+    if metadata_count > 0 || embedded_xmp {
+        let detail = if metadata_count > 0 {
+            format!(
                 "{metadata_count} {}",
-                if metadata_count == 1 {
-                    "block"
-                } else {
-                    "blocks"
-                }
-            )),
-            false,
-        ));
+                if metadata_count == 1 { "block" } else { "blocks" }
+            )
+        } else {
+            "embedded packet".to_owned()
+        };
+        items.push(MetadataItem::new("XMP metadata", Some(detail), false));
     }
     Ok(items)
 }
@@ -615,6 +703,16 @@ fn scrub_pdf(bytes: &[u8]) -> Result<Vec<u8>, String> {
             }
             Object::Stream(stream) => {
                 stream.dict.remove(b"Metadata");
+                // Excise an XMP packet embedded directly in the stream content,
+                // so XMP is gone even when the stream stays reachable through a
+                // reference other than /Metadata (dropping the reference + prune
+                // alone would leave it). Surrounding content bytes are preserved.
+                let content = stream_plain_content(stream);
+                if find_subslice(&content, XMP_PACKET_BEGIN).is_some() {
+                    if let Some(stripped) = strip_xmp_packet(&content) {
+                        stream.set_plain_content(stripped);
+                    }
+                }
             }
             _ => {}
         }
@@ -975,7 +1073,10 @@ mod tests {
         );
         let report = inspect(&source).expect("PNG metadata should inspect");
         assert!(report.contains("Text: GPS Position"));
-        assert!(report.contains("(compressed)"));
+        // The zTXt payload here is not valid zlib, so it cannot be inflated; the
+        // tool says so honestly (valid compressed text is inflated — see the
+        // png_compressed_ztxt/itxt tests) while still stripping the chunk.
+        assert!(report.contains("(unreadable compressed text)"));
         assert!(report.contains("\"sensitive\":true"));
         assert!(report.contains("A local file"));
         assert!(report.contains("2026-07-21 12:34:56 UTC"));
@@ -1028,6 +1129,99 @@ mod tests {
             inspect(&scrubbed).unwrap(),
             "{\"kind\":\"pdf\",\"items\":[]}"
         );
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).expect("zlib fixture should encode");
+        encoder.finish().expect("zlib fixture should finish")
+    }
+
+    #[test]
+    fn png_compressed_ztxt_is_inflated_reported_and_removed() {
+        let clean = png_fixture(16, 8);
+        // keyword "Comment" \0 + compression_method(0) + zlib(text with GPS).
+        let mut ztxt = b"Comment\0\0".to_vec();
+        ztxt.extend_from_slice(&zlib(b"Shot on MtclabCam, GPSLatitude 60.1, GPSLongitude 24.9"));
+        let source = inject_png_chunks(&clean, &[png_chunk(b"zTXt", &ztxt)]);
+        let source_idat = chunk_data(&source, b"IDAT");
+
+        let report = inspect(&source).expect("zTXt PNG should inspect");
+        assert!(report.contains("GPSLatitude"), "inflated value is shown: {report}");
+        assert!(
+            report.contains("\"sensitive\":true"),
+            "GPS in inflated text flags sensitive: {report}"
+        );
+        let scrubbed = scrub(&source).expect("zTXt PNG should scrub");
+        assert!(!scrubbed.windows(4).any(|window| window == b"zTXt"));
+        assert_eq!(chunk_data(&scrubbed, b"IDAT"), source_idat, "IDAT untouched");
+    }
+
+    #[test]
+    fn png_compressed_itxt_is_inflated() {
+        let clean = png_fixture(16, 8);
+        // keyword \0 flag(1) method(0) language\0 translated\0 + zlib(text).
+        let mut itxt = b"XML:com.adobe.xmp\0\x01\0en\0\0".to_vec();
+        itxt.extend_from_slice(&zlib(b"<x:xmpmeta>studio edit trail</x:xmpmeta>"));
+        let source = inject_png_chunks(&clean, &[png_chunk(b"iTXt", &itxt)]);
+
+        let report = inspect(&source).expect("iTXt PNG should inspect");
+        assert!(report.contains("studio edit trail"), "compressed iTXt inflated: {report}");
+        let scrubbed = scrub(&source).expect("iTXt PNG should scrub");
+        assert!(!scrubbed.windows(4).any(|window| window == b"iTXt"));
+    }
+
+    /// A PDF whose XMP stream is reachable from the catalog through `/AF`, not
+    /// `/Metadata` — dropping the `/Metadata` reference and pruning would leave it.
+    fn pdf_with_reachable_xmp_stream() -> Vec<u8> {
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let content_id = document.add_object(Stream::new(dictionary! {}, b"q Q".to_vec()));
+        let xmp_id = document.add_object(Stream::new(
+            dictionary! { "Type" => "Metadata", "Subtype" => "XML" },
+            b"<?xpacket begin=\"\xef\xbb\xbf\"?><x:xmpmeta>secret author line</x:xmpmeta><?xpacket end=\"w\"?>".to_vec(),
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+            "Resources" => dictionary! {},
+            "Contents" => content_id,
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![Object::Reference(page_id)],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+            "AF" => vec![Object::Reference(xmp_id)],
+        });
+        document.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        document
+            .save_to(&mut bytes)
+            .expect("embedded-XMP fixture should serialize");
+        bytes
+    }
+
+    #[test]
+    fn pdf_xmp_reachable_without_metadata_ref_is_reported_and_removed() {
+        let source = pdf_with_reachable_xmp_stream();
+        let report = inspect(&source).expect("embedded-XMP PDF should inspect");
+        assert!(report.contains("XMP metadata"), "reports embedded XMP: {report}");
+
+        let scrubbed = scrub(&source).expect("embedded-XMP PDF should scrub");
+        assert!(!scrubbed.windows(9).any(|window| window == b"<?xpacket"));
+        assert!(!scrubbed.windows(18).any(|window| window == b"secret author line"));
+        assert_eq!(Document::load_mem(&scrubbed).unwrap().get_pages().len(), 1);
+        assert_eq!(inspect(&scrubbed).unwrap(), "{\"kind\":\"pdf\",\"items\":[]}");
     }
 
     #[test]
