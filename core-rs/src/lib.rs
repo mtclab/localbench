@@ -7,8 +7,10 @@ use zune_jpeg::{
 };
 
 mod image_ops;
+mod metadata_ops;
 
 pub use image_ops::{compress_image, convert_image, resize_image};
+pub use metadata_ops::{inspect_metadata, scrub_metadata};
 
 const ENCRYPTED_PDF_ERROR: &str = "This PDF is password-protected, so its pages can't be read.";
 const MAX_REENCODED_DIMENSION: u16 = 4_096;
