@@ -215,7 +215,10 @@ function updateControls() {
   createFileInput.disabled = unavailable;
   pageSize.disabled = unavailable;
   createButton.disabled =
-    unavailable || selectedImages.length === 0 || inputSize() > MAX_TOTAL_BYTES;
+    unavailable ||
+    selectedImages.length === 0 ||
+    selectedImages.length > MAX_IMAGES ||
+    inputSize() > MAX_TOTAL_BYTES;
   createButton.textContent = createWorking ? "Creating…" : "Create PDF";
   createDownloadButton.disabled = createWorking || createdPdf === null;
 
@@ -344,6 +347,10 @@ pageSize.addEventListener("change", () => {
 
 createButton.addEventListener("click", async () => {
   if (selectedImages.length === 0 || createWorking || !coreReady || coreFailed) return;
+  if (selectedImages.length > MAX_IMAGES) {
+    setStatus(`Choose no more than ${MAX_IMAGES} images for one PDF.`, "error");
+    return;
+  }
   if (inputSize() > MAX_TOTAL_BYTES) {
     setStatus("Choose no more than 512 MB of images for one PDF.", "error");
     return;

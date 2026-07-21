@@ -40,3 +40,7 @@ shots-zip/
 scrub-corpus/
 shots-scrub/
 .scrubvenv/
+
+# images->PDF smoke corpus (generated)
+img2pdf-corpus/
+shots-img2pdf/
