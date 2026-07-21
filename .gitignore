@@ -8,6 +8,8 @@
 /app-img/dist/
 /app-zip/node_modules/
 /app-zip/dist/
+/app-img2pdf/node_modules/
+/app-img2pdf/dist/
 /app-scrub/node_modules/
 /app-scrub/dist/
 
@@ -15,6 +17,7 @@
 /app/src/wasm/
 /app-img/src/wasm/
 /app-zip/src/wasm/
+/app-img2pdf/src/wasm/
 
 # Misc
 *.log
@@ -37,3 +40,7 @@ shots-zip/
 scrub-corpus/
 shots-scrub/
 .scrubvenv/
+
+# images->PDF smoke corpus (generated)
+img2pdf-corpus/
+shots-img2pdf/

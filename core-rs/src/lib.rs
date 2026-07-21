@@ -8,10 +8,12 @@ use zune_jpeg::{
 
 mod archive_ops;
 mod image_ops;
+mod imagepdf_ops;
 mod metadata_ops;
 
 pub use archive_ops::{create_zip, extract_zip_entry, list_zip};
 pub use image_ops::{compress_image, convert_image, resize_image};
+pub use imagepdf_ops::images_to_pdf;
 pub use metadata_ops::{inspect_metadata, scrub_metadata};
 
 const ENCRYPTED_PDF_ERROR: &str = "This PDF is password-protected, so its pages can't be read.";
@@ -381,7 +383,7 @@ impl JpegColor {
 /// Return whether the byte stream announces a baseline sequential DCT frame.
 /// Other JPEG modes can also use PDF's DCTDecode filter, but S3 deliberately
 /// leaves them untouched rather than changing a mode we have not qualified.
-fn is_baseline_jpeg(bytes: &[u8]) -> bool {
+pub(crate) fn is_baseline_jpeg(bytes: &[u8]) -> bool {
     if !bytes.starts_with(&[0xff, 0xd8]) {
         return false;
     }
