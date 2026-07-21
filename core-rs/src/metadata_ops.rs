@@ -197,7 +197,18 @@ fn image_dimensions(bytes: &[u8], expected: ImageFormat) -> Result<(u32, u32), S
     Ok(dimensions)
 }
 
+/// Classify a JPEG marker segment. Returns `Some` for every metadata-bearing
+/// segment (which the scrubber drops) and `None` for segments that must be kept.
+///
+/// The drop decision is by MARKER CLASS, never by payload contents: an `APPn`
+/// segment carries only application metadata in baseline JPEG, so matching on a
+/// known payload prefix (Exif/XMP/Photoshop) would let a crafted APP1 with an
+/// unrecognized prefix survive with its PII intact. We therefore strip ALL
+/// application segments except the three that are decode-relevant and carry no
+/// user metadata: APP0 (JFIF), APP2 (ICC colour profile), APP14 (Adobe colour
+/// transform). The prefix checks below only choose a friendlier label.
 fn jpeg_item(marker: u8, payload: &[u8]) -> Option<MetadataItem> {
+    let bytes_detail = || Some(format!("{} bytes", payload.len()));
     match marker {
         0xe1 if payload.starts_with(b"Exif\0\0") => {
             let sensitive = exif_has_gps(payload);
@@ -211,21 +222,19 @@ fn jpeg_item(marker: u8, payload: &[u8]) -> Option<MetadataItem> {
                 sensitive,
             ))
         }
-        0xe1 if payload.starts_with(b"http://ns.adobe.com/xap/") => Some(MetadataItem::new(
-            "XMP",
-            Some(format!("{} bytes", payload.len())),
-            false,
-        )),
-        0xed if payload.starts_with(b"Photoshop 3.0") => Some(MetadataItem::new(
-            "IPTC / Photoshop",
-            Some(format!("{} bytes", payload.len())),
-            false,
-        )),
-        0xfe => Some(MetadataItem::new(
-            "JPEG comment",
-            Some(lossy_detail(payload)),
-            false,
-        )),
+        // Any other APP1 is XMP or an unrecognized application payload — still
+        // metadata, still stripped (this closes the known-prefix bypass).
+        0xe1 => Some(MetadataItem::new("XMP / application metadata", bytes_detail(), false)),
+        0xed if payload.starts_with(b"Photoshop 3.0") => {
+            Some(MetadataItem::new("IPTC / Photoshop", bytes_detail(), false))
+        }
+        0xed => Some(MetadataItem::new("Photoshop / application metadata", bytes_detail(), false)),
+        0xfe => Some(MetadataItem::new("JPEG comment", Some(lossy_detail(payload)), false)),
+        // Remaining application segments (APP3–APP12, APP15) are metadata too.
+        // APP0/APP2/APP14 fall through to None and are preserved for decoding.
+        0xe3..=0xec | 0xef => {
+            Some(MetadataItem::new("Application metadata", bytes_detail(), false))
+        }
         _ => None,
     }
 }
@@ -891,6 +900,41 @@ mod tests {
         let clean = jpeg_fixture(16, 8);
         assert_eq!(inspect(&clean).unwrap(), "{\"kind\":\"jpeg\",\"items\":[]}");
         assert_eq!(scrub(&clean).unwrap(), clean);
+    }
+
+    #[test]
+    fn jpeg_app1_without_a_known_prefix_is_still_stripped() {
+        let clean = jpeg_fixture(20, 10);
+        // An APP1 that is neither the Exif nor the canonical XMP prefix — the exact
+        // crafted segment a payload-prefix scrubber would have left in place.
+        let sneaky = jpeg_segment(0xe1, b"http://ns.adobe.com/xap\0<x>Location 60,24</x>");
+        let source = inject_jpeg_segments(&clean, &[sneaky.clone()]);
+
+        let report = inspect(&source).expect("crafted APP1 JPEG should inspect");
+        assert!(report.contains("application metadata"));
+        let scrubbed = scrub(&source).expect("crafted APP1 JPEG should scrub");
+        assert!(!scrubbed.windows(2).any(|window| window == [0xff, 0xe1]));
+        assert!(!scrubbed.windows(8).any(|window| window == b"Location"));
+        // Nothing but the metadata segment was touched.
+        assert_eq!(scrubbed, clean);
+    }
+
+    #[test]
+    fn jpeg_keeps_decode_critical_app0_app2_app14() {
+        let clean = jpeg_fixture(18, 9);
+        let icc = jpeg_segment(0xe2, b"ICC_PROFILE\0color");
+        // A well-formed APP14 Adobe marker (Adobe + version/flags/transform); a
+        // malformed one would make the JPEG undecodable, which is a different test.
+        let adobe = jpeg_segment(0xee, b"Adobe\0\x64\0\0\0\0\x01");
+        let source = inject_jpeg_segments(&clean, &[icc.clone(), adobe.clone()]);
+
+        // Neither APP2 (ICC) nor APP14 (Adobe) is user metadata: report is empty
+        // and the scrub keeps both segments verbatim.
+        assert_eq!(inspect(&source).unwrap(), "{\"kind\":\"jpeg\",\"items\":[]}");
+        let scrubbed = scrub(&source).expect("decode-critical JPEG should scrub");
+        assert!(scrubbed.windows(icc.len()).any(|window| window == icc));
+        assert!(scrubbed.windows(adobe.len()).any(|window| window == adobe));
+        assert_eq!(scrubbed, source);
     }
 
     #[test]
