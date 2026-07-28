@@ -187,18 +187,30 @@ const functionalPhaseErrors = [...consoleErrors];
 
 // Cloudflare injects an inline JavaScript-Detections loader
 // (cdn-cgi/challenge-platform/scripts/jsd/main.js) zone-wide. Our strict CSP
-// (no 'unsafe-inline') BLOCKS it by design — that is the moat working, not our
-// bug: these apps ship zero inline executable scripts, so any "inline script
-// violates CSP" error can only be a third-party injection. Treat that exact
-// violation as expected; still surface the count so it never hides a real one.
-// Engine-agnostic: Chromium ("inline script violates ... Content Security Policy
-// directive 'script-src'"), Firefox ("Content-Security-Policy: ... blocked an
-// inline script (script-src-elem)"), and WebKit ("Refused to execute a script ...
-// script-src directive of the Content Security Policy") all word it differently.
+// (no 'unsafe-inline') BLOCKS it by design - that is the moat working, not our
+// bug: these apps ship zero inline executable scripts, so an INLINE-EXECUTION
+// block can only be a third-party injection. Treat that exact violation as
+// expected; still surface the count so it never hides a real one.
+//
+// Engine-agnostic on the inline wording: Chromium ("Executing inline script
+// violates the following Content Security Policy directive 'script-src ...'",
+// older builds "Refused to execute inline script"), Firefox ("blocked an
+// inline script (script-src-elem)", newer "blocked the execution of an inline
+// script"), WebKit ("Refused to execute a script because its hash, its nonce,
+// or 'unsafe-inline' does not appear in the script-src directive").
+//
+// NOT excused: a blocked EXTERNAL script ("Refused to load the script
+// 'https://...' ... script-src"). CSP stops it before the request, so the
+// zero-external-request check above cannot see it either - a shipped external
+// script tag is exactly what this suite exists to catch, so it must fail the
+// console gate. scripts/smoke-harness.test.mjs holds that line.
 const isExpectedCspBlock = (m) =>
   /content[-\s]security[-\s]policy/i.test(m) &&
   /script-src/i.test(m) &&
-  /(inline script|refused to execute|blocked an inline|violates)/i.test(m);
+  (/(?:executing|refused to execute)(?: an?)? inline script/i.test(m) ||
+    /blocked (?:an|the execution of an) inline script/i.test(m) ||
+    /refused to execute a script/i.test(m)) &&
+  !/(?:refused to load|blocked the loading of)/i.test(m);
 const expectedCspBlocks = functionalPhaseErrors.filter(isExpectedCspBlock);
 const functionalConsoleErrors = functionalPhaseErrors.filter((m) => !isExpectedCspBlock(m));
 if (expectedCspBlocks.length) {
