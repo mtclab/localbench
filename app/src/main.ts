@@ -1,8 +1,22 @@
 import "./style.css";
+import { setAnswer } from "../../shared/answer";
+import { statusFromNotices, type CoreNotice } from "../../shared/notices";
+import {
+  observeResourceTally,
+  type ResourceProofRequest,
+  type ResourceProofResponse,
+  type ResourceTally,
+} from "../../shared/resource-proof";
+
+// Started before the worker so the receipt's counter covers this document from
+// its first request. See shared/resource-proof.ts for why an observer, not
+// performance.getEntriesByType().
+const readPageResourceTally = observeResourceTally();
 
 // Protocol mirrors app/src/core.worker.ts. The worker posts "ready" (with the
 // Rust core version) once on load; every operation is id-matched.
 type WorkerRequest =
+  | ResourceProofRequest
   | { id: number; type: "page-count"; bytes: ArrayBuffer }
   | { id: number; type: "merge"; documents: ArrayBuffer[] }
   | { id: number; type: "compress"; bytes: ArrayBuffer; quality: number }
@@ -16,11 +30,15 @@ type WorkerRequest =
 
 type WorkerResult =
   | { type: "result"; id: number; pages: number }
-  | { type: "result"; id: number; bytes: ArrayBuffer };
+  | { type: "result"; id: number; bytes: ArrayBuffer; notices: CoreNotice[] };
+
+/** Bytes never travel without the notices the core attached to them. */
+type CoreFile = { bytes: ArrayBuffer; notices: CoreNotice[] };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
   | WorkerResult
+  | ResourceProofResponse
   | { type: "error"; id?: number; message: string };
 
 const worker = new Worker(new URL("./core.worker.ts", import.meta.url), { type: "module" });
@@ -28,6 +46,10 @@ const pending = new Map<
   number,
   { resolve: (result: WorkerResult) => void; reject: (reason: Error) => void }
 >();
+// Kept apart from `pending` so a receipt probe can never be mistaken for a
+// file operation, and vice versa.
+const pendingResourceProof = new Map<number, (tally: ResourceTally | null) => void>();
+let workerUnavailable = false;
 let nextRequestId = 1;
 
 worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
@@ -35,6 +57,12 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
   if (response.type === "ready") {
     onCoreReady(response.version);
+    return;
+  }
+
+  if (response.type === "resource-proof") {
+    pendingResourceProof.get(response.id)?.(response.tally);
+    pendingResourceProof.delete(response.id);
     return;
   }
 
@@ -55,11 +83,36 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
 worker.addEventListener("error", () => {
   onCoreFailed();
+  workerUnavailable = true;
   for (const request of pending.values()) {
     request.reject(new Error("The local processing worker could not start."));
   }
   pending.clear();
+  // null, never 0: a worker that cannot answer has not been shown to be quiet.
+  for (const resolve of pendingResourceProof.values()) resolve(null);
+  pendingResourceProof.clear();
 });
+
+/**
+ * Asks the worker for its own resource tally. Resolves null — not an empty
+ * tally — when the worker does not answer, so the receipt can say "unproven"
+ * instead of printing a zero it cannot stand behind.
+ */
+function requestWorkerResourceTally(timeoutMs = 1500): Promise<ResourceTally | null> {
+  if (workerUnavailable) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const id = nextRequestId++;
+    const timer = setTimeout(() => {
+      pendingResourceProof.delete(id);
+      resolve(null);
+    }, timeoutMs);
+    pendingResourceProof.set(id, (tally) => {
+      clearTimeout(timer);
+      resolve(tally);
+    });
+    worker.postMessage({ id, type: "resource-proof" } satisfies WorkerRequest);
+  });
+}
 
 function runCoreRequest(
   request: WorkerRequest,
@@ -94,41 +147,43 @@ async function countPages(bytes: ArrayBuffer): Promise<number> {
   return result.pages;
 }
 
-async function mergeDocuments(documents: ArrayBuffer[]): Promise<ArrayBuffer> {
-  const id = nextRequestId++;
-  const result = await runCoreRequest(
-    { id, type: "merge", documents },
-    documents,
-    120_000,
-  );
+/**
+ * Unwraps a byte-producing worker result. Returning `CoreFile` rather than a
+ * bare ArrayBuffer is deliberate: there is no call shape that yields the file
+ * while leaving its notices behind.
+ */
+function coreFile(result: WorkerResult): CoreFile {
   if (!("bytes" in result)) throw new Error("The local core returned an unexpected result.");
-  return result.bytes;
+  return { bytes: result.bytes, notices: result.notices };
+}
+
+async function mergeDocuments(documents: ArrayBuffer[]): Promise<CoreFile> {
+  const id = nextRequestId++;
+  return coreFile(
+    await runCoreRequest({ id, type: "merge", documents }, documents, 120_000),
+  );
 }
 
 async function organizeDocument(
   bytes: ArrayBuffer,
   pages: number[],
   rotations: number[],
-): Promise<ArrayBuffer> {
+): Promise<CoreFile> {
   const id = nextRequestId++;
-  const result = await runCoreRequest(
-    { id, type: "organize", bytes, pages, rotations },
-    [bytes],
-    120_000,
+  return coreFile(
+    await runCoreRequest(
+      { id, type: "organize", bytes, pages, rotations },
+      [bytes],
+      120_000,
+    ),
   );
-  if (!("bytes" in result)) throw new Error("The local core returned an unexpected result.");
-  return result.bytes;
 }
 
-async function compressDocument(bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
+async function compressDocument(bytes: ArrayBuffer, quality: number): Promise<CoreFile> {
   const id = nextRequestId++;
-  const result = await runCoreRequest(
-    { id, type: "compress", bytes, quality },
-    [bytes],
-    120_000,
+  return coreFile(
+    await runCoreRequest({ id, type: "compress", bytes, quality }, [bytes], 120_000),
   );
-  if (!("bytes" in result)) throw new Error("The local core returned an unexpected result.");
-  return result.bytes;
 }
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -175,10 +230,13 @@ const compressOutput = requiredElement<HTMLDivElement>("#compress-output");
 const compressBeforeSize = requiredElement<HTMLElement>("#compress-before-size");
 const compressAfterSize = requiredElement<HTMLElement>("#compress-after-size");
 const compressSavedPercent = requiredElement<HTMLElement>("#compress-saved-percent");
+const compressMetadata = requiredElement<HTMLElement>("#compress-metadata");
 const compressDownloadButton = requiredElement<HTMLButtonElement>("#compress-download-button");
 const version = requiredElement<HTMLElement>("#core-version");
 
-type StatusState = "ready" | "working" | "success" | "error";
+// "notice": succeeded, but the core reported something that contradicts the
+// page's own copy. See shared/notices.ts.
+type StatusState = "ready" | "working" | "success" | "error" | "notice";
 
 function setStatus(
   result: HTMLDivElement,
@@ -206,11 +264,29 @@ function setCompressStatus(text: string, state: StatusState) {
   setStatus(compressResult, compressResultText, text, state);
 }
 
+/* The answer block lives in shared/answer.ts; see the note there on why. */
+
+/* A drop zone that holds a file says which file, not "Drop a PDF here". */
+function setDropLabel(zone: HTMLElement, title: string, detail: string, loaded: boolean) {
+  const titleSlot = zone.querySelector<HTMLElement>(".drop-title");
+  const detailSlot = zone.querySelector<HTMLElement>(".drop-detail");
+  if (titleSlot) titleSlot.textContent = title;
+  if (detailSlot) detailSlot.textContent = detail;
+  if (loaded) zone.dataset.loaded = "true";
+  else delete zone.dataset.loaded;
+}
+
+const countAnswer = requiredElement<HTMLElement>("#page-count-answer");
+const mergeAnswer = requiredElement<HTMLElement>("#merge-answer");
+const organizeAnswer = requiredElement<HTMLElement>("#organize-answer");
+const compressAnswer = requiredElement<HTMLElement>("#compress-answer");
+
 let coreFailed = false;
 
 function onCoreReady(coreVersion: string) {
   coreFailed = false;
   version.textContent = `v${coreVersion}`;
+  delete version.dataset.state;
   updateMergeControls();
   updateOrganizeControls();
   updateCompressControls();
@@ -239,14 +315,25 @@ async function processCountFile(file: File) {
   }
 
   setCountStatus(`Reading ${file.name} locally…`, "working");
+  setAnswer(countAnswer, null);
   try {
     // Reading and transferring are orchestration only; PDF byte interpretation stays in Rust.
     const bytes = await file.arrayBuffer();
     const count = await countPages(bytes);
     setCountStatus(`${count} ${count === 1 ? "page" : "pages"}`, "success");
+    setAnswer(countAnswer, {
+      file: file.name,
+      value: String(count),
+      note: count === 1 ? "page — counted on this device" : "pages — counted on this device",
+      // Counting reads the file and produces nothing, so the core has nothing
+      // to disclose about it.
+      notices: [],
+    });
+    setDropLabel(countDropZone, file.name, "Drop another PDF to count it", true);
   } catch (error) {
     const message = error instanceof Error ? error.message : "This PDF could not be read.";
     setCountStatus(message, "error");
+    setAnswer(countAnswer, null);
   } finally {
     countFileInput.value = "";
   }
@@ -426,11 +513,24 @@ mergeButton.addEventListener("click", async () => {
     // JS reads, transfers, and downloads bytes only; Rust owns all PDF interpretation.
     const documents = await Promise.all(selectedMergeFiles.map((file) => file.arrayBuffer()));
     const merged = await mergeDocuments(documents);
-    downloadPdf(merged, "merged.pdf");
-    setMergeStatus("Merged PDF ready — downloaded as merged.pdf.", "success");
+    downloadPdf(merged.bytes, "merged.pdf");
+    setAnswer(mergeAnswer, {
+      file: "merged.pdf",
+      value: formatFileSize(merged.bytes.byteLength),
+      note: `${selectedMergeFiles.length} ${
+        selectedMergeFiles.length === 1 ? "file" : "files"
+      } merged on this device — downloaded`,
+      notices: merged.notices,
+    });
+    const mergeStatus = statusFromNotices(
+      merged.notices,
+      "Merged PDF ready — downloaded as merged.pdf.",
+    );
+    setMergeStatus(mergeStatus.text, mergeStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The PDFs could not be merged.";
     setMergeStatus(message, "error");
+    setAnswer(mergeAnswer, null);
   } finally {
     mergeWorking = false;
     renderMergeFiles();
@@ -673,11 +773,24 @@ organizeButton.addEventListener("click", async () => {
       organizeEntries.map((entry) => entry.page),
       organizeEntries.map((entry) => entry.rotation),
     );
-    downloadPdf(organized, "organized.pdf");
-    setOrganizeStatus("Organized PDF ready — downloaded as organized.pdf.", "success");
+    downloadPdf(organized.bytes, "organized.pdf");
+    setAnswer(organizeAnswer, {
+      file: "organized.pdf",
+      value: String(organizeEntries.length),
+      note: `${
+        organizeEntries.length === 1 ? "page" : "pages"
+      } exported on this device — downloaded`,
+      notices: organized.notices,
+    });
+    const organizeStatus = statusFromNotices(
+      organized.notices,
+      "Organized PDF ready — downloaded as organized.pdf.",
+    );
+    setOrganizeStatus(organizeStatus.text, organizeStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The PDF could not be organized.";
     setOrganizeStatus(message, "error");
+    setAnswer(organizeAnswer, null);
   } finally {
     organizeWorking = false;
     renderOrganizePages();
@@ -707,10 +820,13 @@ function renderCompressSource() {
 
 function resetCompressedResult() {
   compressedResult = null;
+  setAnswer(compressAnswer, null);
   compressOutput.hidden = true;
   compressBeforeSize.textContent = "—";
   compressAfterSize.textContent = "—";
   compressSavedPercent.textContent = "—";
+  compressMetadata.textContent = "—";
+  compressDownloadButton.textContent = "Download compressed PDF";
   updateCompressControls();
 }
 
@@ -783,27 +899,62 @@ compressButton.addEventListener("click", async () => {
       await compressSource.file.arrayBuffer(),
       quality,
     );
-    const afterBytes = compressed.byteLength;
+    const afterBytes = compressed.bytes.byteLength;
     const savedBytes = Math.max(0, beforeBytes - afterBytes);
     const savedPercent = beforeBytes === 0 ? 0 : (savedBytes / beforeBytes) * 100;
     const baseName = compressSource.file.name.replace(/\.pdf$/i, "") || "document";
-    const filename = `${baseName}-compressed.pdf`;
+    /*
+     * A file named "…-compressed.pdf" that is byte-for-byte the input is a lie
+     * told in the one place the notice cannot follow: the user's downloads
+     * folder, read weeks later. When the core hands the original back, the
+     * download keeps the original name.
+     */
+    const returnedUnchanged = compressed.notices.some(
+      (notice) => notice.code === "pdf-returned-unchanged",
+    );
+    const filename = returnedUnchanged
+      ? compressSource.file.name
+      : `${baseName}-compressed.pdf`;
 
-    compressedResult = { bytes: compressed, filename };
+    compressedResult = { bytes: compressed.bytes, filename };
     compressBeforeSize.textContent = formatFileSize(beforeBytes);
     compressAfterSize.textContent = formatFileSize(afterBytes);
     compressSavedPercent.textContent = `${savedPercent.toFixed(1)}% (${formatFileSize(savedBytes)})`;
+    // The metadata row states what happened to THIS file, not what the tool
+    // does in general: when the core returns the input unchanged, nothing was
+    // removed from it and the row has to say so.
+    compressMetadata.textContent = compressed.notices.some(
+      (notice) => notice.code === "pdf-metadata-removed",
+    )
+      ? "Removed"
+      : returnedUnchanged
+        ? "Not removed — original returned"
+        : "None to remove";
+    compressDownloadButton.textContent = returnedUnchanged
+      ? "Download your original PDF"
+      : "Download compressed PDF";
     compressOutput.hidden = false;
-    downloadPdf(compressed, filename);
-    setCompressStatus(
+    downloadPdf(compressed.bytes, filename);
+    setAnswer(compressAnswer, {
+      file: filename,
+      value: savedBytes > 0 ? `−${savedPercent.toFixed(1)}%` : formatFileSize(afterBytes),
+      note:
+        savedBytes > 0
+          ? `${formatFileSize(beforeBytes)} → ${formatFileSize(afterBytes)}, compressed on this device`
+          : `No safe reduction found — ${formatFileSize(afterBytes)} downloaded unchanged`,
+      notices: compressed.notices,
+    });
+    const compressStatus = statusFromNotices(
+      compressed.notices,
       savedBytes > 0
         ? `Compressed PDF ready — saved ${savedPercent.toFixed(1)}% and downloaded as ${filename}.`
         : `No safe size reduction was found. An unchanged-size PDF was downloaded as ${filename}.`,
-      "success",
     );
+    setCompressStatus(compressStatus.text, compressStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The PDF could not be compressed.";
     setCompressStatus(message, "error");
+    setAnswer(compressAnswer, null);
   } finally {
     compressWorking = false;
     updateCompressControls();
@@ -816,10 +967,10 @@ compressDownloadButton.addEventListener("click", () => {
 
 type Tool = "page-count" | "merge" | "organize" | "compress";
 const TOOL_TITLES: Record<Tool, string> = {
-  "page-count": "Count PDF Pages — localbench",
-  merge: "Merge PDFs — localbench",
-  organize: "Organize PDF Pages — localbench",
-  compress: "Compress PDF — localbench",
+  "page-count": "Count PDF Pages — keeplocal",
+  merge: "Merge PDFs — keeplocal",
+  organize: "Organize PDF Pages — keeplocal",
+  compress: "Compress PDF — keeplocal",
 };
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tool]"));
 const toolPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-panel]"));
@@ -908,36 +1059,90 @@ restoreToolFromHash();
 const localBadge = requiredElement<HTMLButtonElement>("#local-badge");
 const localInspector = requiredElement<HTMLDialogElement>("#local-inspector");
 const inspectorClose = requiredElement<HTMLButtonElement>("#inspector-close");
-const externalRequestCount = requiredElement<HTMLElement>("#external-request-count");
-const cspConnectSrc = requiredElement<HTMLElement>("#csp-connect-src");
-const offlineControlStatus = requiredElement<HTMLElement>("#offline-control-status");
 const cspMeta = requiredElement<HTMLMetaElement>(
   'meta[http-equiv="Content-Security-Policy"]',
 );
 let inspectorReturnFocus: HTMLElement | null = null;
 
+/*
+ * The receipt. Every reading below is measured in THIS browser session — the
+ * one thing an upload-model competitor cannot print. Written to every
+ * [data-proof] slot at once so the header badge, the sidebar receipt and the
+ * dialog can never disagree.
+ */
+function writeProof(name: string, text: string, state?: "pending" | "fail") {
+  for (const slot of document.querySelectorAll<HTMLElement>(`[data-proof="${name}"]`)) {
+    slot.textContent = text;
+    if (state) slot.dataset.state = state;
+    else delete slot.dataset.state;
+  }
+}
+
+/*
+ * The request count covers BOTH globals: this document and the worker that
+ * actually holds the user's file. The worker's timeline is invisible from here,
+ * so it is asked for its own tally over the message port. Any reading that
+ * cannot be obtained is reported as unproven — never as a zero.
+ */
+async function updateExternalRequestProof(): Promise<void> {
+  const page = readPageResourceTally();
+  if (!page.measurable) {
+    writeProof("external", "Unproven — this browser does not report resource timing", "fail");
+    return;
+  }
+
+  const workerTally = await requestWorkerResourceTally();
+  if (workerTally === null) {
+    writeProof("external", "Unproven — the worker thread did not report", "fail");
+    return;
+  }
+  if (!workerTally.measurable) {
+    writeProof("external", "Unproven — the worker cannot report resource timing", "fail");
+    return;
+  }
+
+  const external = page.external.length + workerTally.external.length;
+  writeProof("external", String(external), external === 0 ? undefined : "fail");
+}
+
 function updateInspectorProof() {
-  const externalResources = performance.getEntriesByType("resource").filter((entry) => {
-    try {
-      return new URL(entry.name, location.href).origin !== location.origin;
-    } catch {
-      return true;
-    }
-  });
-  externalRequestCount.textContent = String(externalResources.length);
+  writeProof("external", "Checking page and worker…", "pending");
+  void updateExternalRequestProof();
 
   const connectDirective = cspMeta.content
     .split(";")
     .map((directive) => directive.trim())
     .find((directive) => /^connect-src(?:\s|$)/i.test(directive));
-  cspConnectSrc.textContent = connectDirective ?? "Not declared";
+  writeProof("connect-src", connectDirective ?? "Not declared", connectDirective ? undefined : "fail");
+
+  // The directive that actually covers the Web Worker: a dedicated worker
+  // inherits the owner document's policy, so this is the line that binds the
+  // thread doing the file work. The request count above cannot see it.
+  const workerDirective = cspMeta.content
+    .split(";")
+    .map((directive) => directive.trim())
+    .find((directive) => /^worker-src(?:\s|$)/i.test(directive));
+  writeProof("worker-src", workerDirective ?? "Not declared", workerDirective ? undefined : "fail");
 
   const controlled =
     "serviceWorker" in navigator && navigator.serviceWorker.controller !== null;
-  offlineControlStatus.textContent = controlled
-    ? "Yes — a service worker controls this page"
-    : "Not yet — reload once after the first visit";
+  writeProof(
+    "sw",
+    controlled ? "A service worker controls this page" : "Reload once to enable offline",
+    controlled ? undefined : "pending",
+  );
+
+  writeProof(
+    "stamp",
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  );
 }
+
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-proof-recheck]")) {
+  button.addEventListener("click", () => updateInspectorProof());
+}
+
+updateInspectorProof();
 
 function focusableInspectorElements(): HTMLElement[] {
   return Array.from(
@@ -1016,7 +1221,7 @@ const themeLabel = document.querySelector<HTMLSpanElement>("#theme-label");
 const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 
 function preferredTheme(): "light" | "dark" {
-  const stored = localStorage.getItem("localbench-theme");
+  const stored = localStorage.getItem("keeplocal-theme");
   if (stored === "light" || stored === "dark") return stored;
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
@@ -1026,13 +1231,13 @@ function applyTheme(theme: "light" | "dark") {
   themeToggle?.setAttribute("aria-pressed", String(theme === "dark"));
   themeToggle?.setAttribute("aria-label", `Use ${theme === "dark" ? "light" : "dark"} theme`);
   if (themeLabel) themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
-  if (themeColor) themeColor.content = theme === "dark" ? "#101722" : "#f5f7fb";
+  if (themeColor) themeColor.content = theme === "dark" ? "#0b120f" : "#f6f7f5";
 }
 
 applyTheme(preferredTheme());
 themeToggle?.addEventListener("click", () => {
   const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("localbench-theme", theme);
+  localStorage.setItem("keeplocal-theme", theme);
   applyTheme(theme);
 });
 

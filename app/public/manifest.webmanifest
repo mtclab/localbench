@@ -1,14 +1,17 @@
 {
   "id": "/",
-  "name": "localbench — Private PDF Tools",
-  "short_name": "localbench",
+  "name": "keeplocal \u2014 Private PDF Tools",
+  "short_name": "keeplocal",
   "description": "Count, merge, organize, and compress PDFs privately on your device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "categories": ["utilities", "productivity"],
-  "background_color": "#f5f7fb",
-  "theme_color": "#1458d4",
+  "categories": [
+    "utilities",
+    "productivity"
+  ],
+  "background_color": "#f6f7f5",
+  "theme_color": "#14624a",
   "lang": "en",
   "prefer_related_applications": false,
   "icons": [

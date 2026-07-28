@@ -149,7 +149,7 @@ if (secret) {
 // --- 6) provable-local badge + inspector ---
 await page.click("#local-badge");
 check(await page.isVisible("#local-inspector"), "privacy inspector opens from the badge");
-const netCount = ((await page.textContent("#external-request-count").catch(() => "")) ?? "").trim();
+const netCount = ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
 check(netCount === "0", `inspector external-request counter reads 0 (got "${netCount}")`);
 await page.keyboard.press("Escape");
 check(!(await page.isVisible("#local-inspector")), "inspector closes on Escape");
