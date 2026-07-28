@@ -98,10 +98,28 @@ if (dl2) {
 } else check(false, "A4 Create PDF produced a download");
 async function save(d, name) { const p = path.join(OUT, name); await d.saveAs(p); return readFile(p); }
 
+/*
+ * The inspector fills the external-request counter ASYNCHRONOUSLY: opening it
+ * paints a pending placeholder ("Checking page and worker…") and writes the
+ * number only once the worker has answered over the message port with its own
+ * tally. Reading the slot straight after the click is a race that reports the
+ * placeholder as a failure - a harness bug, not a product one. Wait for the
+ * counter to SETTLE (a number, or a fail-marked verdict like "Unproven — …")
+ * and assert on that, so a genuinely non-zero count still fails this gate.
+ */
+async function readSettledExternalProof() {
+  await page.waitForFunction(() => {
+    const slot = document.querySelector('[data-proof="external"]');
+    if (!slot) return false;
+    return /^\d+$/.test((slot.textContent ?? "").trim()) || slot.dataset.state === "fail";
+  }, { timeout: 5000 }).catch(() => {});
+  return ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
+}
+
 // --- 4) provable-local badge ---
 await page.click("#local-badge");
 check(await page.isVisible("#local-inspector"), "privacy inspector opens from the badge");
-const netCount = ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
+const netCount = await readSettledExternalProof();
 check(netCount === "0", `inspector external-request counter reads 0 (got "${netCount}")`);
 await page.keyboard.press("Escape");
 check(!(await page.isVisible("#local-inspector")), "inspector closes on Escape");

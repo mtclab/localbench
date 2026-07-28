@@ -157,10 +157,28 @@ await load("clean.png", "image/png", clean);
 check(await page.isVisible("#metadata-clean"), "clean.png shows the already-clean state");
 check(await page.isDisabled("#scrub-button"), "scrub button is disabled for an already-clean file");
 
+/*
+ * The inspector fills the external-request counter ASYNCHRONOUSLY: opening it
+ * paints a pending placeholder ("Checking page and worker…") and writes the
+ * number only once the worker has answered over the message port with its own
+ * tally. Reading the slot straight after the click is a race that reports the
+ * placeholder as a failure - a harness bug, not a product one. Wait for the
+ * counter to SETTLE (a number, or a fail-marked verdict like "Unproven — …")
+ * and assert on that, so a genuinely non-zero count still fails this gate.
+ */
+async function readSettledExternalProof() {
+  await page.waitForFunction(() => {
+    const slot = document.querySelector('[data-proof="external"]');
+    if (!slot) return false;
+    return /^\d+$/.test((slot.textContent ?? "").trim()) || slot.dataset.state === "fail";
+  }, { timeout: 5000 }).catch(() => {});
+  return ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
+}
+
 // --- 6) provable-local badge + inspector ---
 await page.click("#local-badge");
 check(await page.isVisible("#local-inspector"), "privacy inspector opens from the badge");
-const netCount = ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
+const netCount = await readSettledExternalProof();
 check(netCount === "0", `inspector external-request counter reads 0 (got "${netCount}")`);
 await page.screenshot({ path: `${OUT}/${ENGINE}-3-inspector.png` });
 await page.keyboard.press("Escape");
