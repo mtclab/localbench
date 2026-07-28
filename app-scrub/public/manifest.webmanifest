@@ -1,14 +1,17 @@
 {
   "id": "/",
-  "name": "localbench — Private Metadata Scrubber",
-  "short_name": "localbench scrub",
+  "name": "keeplocal \u2014 Private Metadata Scrubber",
+  "short_name": "keeplocal scrub",
   "description": "Inspect and remove hidden file metadata privately on your device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "categories": ["utilities", "productivity"],
-  "background_color": "#f5f7fb",
-  "theme_color": "#1458d4",
+  "categories": [
+    "utilities",
+    "productivity"
+  ],
+  "background_color": "#f6f7f5",
+  "theme_color": "#14624a",
   "lang": "en",
   "prefer_related_applications": false,
   "icons": [

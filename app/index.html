@@ -7,34 +7,34 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
-    <meta name="theme-color" content="#f5f7fb" />
+    <meta name="theme-color" content="#f6f7f5" />
     <meta
       name="description"
       content="Count, merge, organize, and compress PDFs privately in your browser. No uploads, accounts, or tracking."
     />
     <link rel="canonical" href="https://pdf.keeplocal.tools/" />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="localbench" />
-    <meta property="og:title" content="Count PDF Pages — localbench" />
+    <meta property="og:site_name" content="keeplocal" />
+    <meta property="og:title" content="Count PDF Pages — keeplocal" />
     <meta
       property="og:description"
       content="Private PDF tools that run entirely in your browser. Your files never leave your device."
     />
     <meta property="og:url" content="https://pdf.keeplocal.tools/" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Count PDF Pages — localbench" />
+    <meta name="twitter:title" content="Count PDF Pages — keeplocal" />
     <meta
       name="twitter:description"
       content="Private PDF tools that run entirely in your browser. Your files never leave your device."
     />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <title>Count PDF Pages — localbench</title>
+    <title>Count PDF Pages — keeplocal</title>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "WebApplication",
-        "name": "localbench",
+        "name": "keeplocal",
         "url": "https://pdf.keeplocal.tools/",
         "description": "Private PDF tools that count, merge, organize, and compress files entirely in the browser.",
         "applicationCategory": "UtilitiesApplication",
@@ -51,9 +51,15 @@
   <body>
     <header class="site-header">
       <div class="brand-cluster">
-        <a class="brand" href="/#page-count" aria-label="localbench home">
-          <span class="brand-mark" aria-hidden="true">lb</span>
-          <span>localbench</span>
+        <a class="brand" href="/#page-count" aria-label="keeplocal home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M8.75 3.75H4.75v16.5h4" />
+              <path d="M15.25 3.75h4v16.5h-4" />
+              <rect x="9.9" y="9.9" width="4.2" height="4.2" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span>keeplocal</span>
         </a>
         <button
           class="local-badge"
@@ -61,10 +67,9 @@
           type="button"
           aria-haspopup="dialog"
           aria-controls="local-inspector"
-          aria-label="Open verified local privacy inspector"
+          aria-label="Open the local execution receipt"
         >
-          <span aria-hidden="true">🔒</span>
-          <span>Verified local</span>
+          <span class="badge-label">Local receipt</span>
         </button>
       </div>
       <nav class="tool-navigation" aria-label="PDF tools">
@@ -78,7 +83,7 @@
             aria-controls="page-count-panel"
             tabindex="0"
           >
-            PDF page count
+            Page count
           </button>
           <button
             class="nav-tool"
@@ -87,7 +92,7 @@
             aria-controls="merge-panel"
             tabindex="-1"
           >
-            Merge PDFs
+            Merge
           </button>
           <button
             class="nav-tool"
@@ -96,7 +101,7 @@
             aria-controls="organize-panel"
             tabindex="-1"
           >
-            Organize pages
+            Organize
           </button>
           <button
             class="nav-tool"
@@ -105,13 +110,12 @@
             aria-controls="compress-panel"
             tabindex="-1"
           >
-            Compress PDF
+            Compress
           </button>
         </div>
       </nav>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
-        <span aria-hidden="true" id="theme-icon">◐</span>
-        <span id="theme-label">Theme</span>
+        <span id="theme-label">Dark</span>
       </button>
     </header>
 
@@ -126,30 +130,40 @@
       <div class="inspector-content">
         <div class="inspector-header">
           <div>
-            <p class="card-kicker">Live privacy proof</p>
-            <h2 id="local-inspector-title">Verified local</h2>
+            <p class="card-kicker">Measured in this browser</p>
+            <h2 id="local-inspector-title">Local execution receipt</h2>
           </div>
-          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close privacy inspector">×</button>
+          <button class="inspector-close" id="inspector-close" type="button" aria-label="Close the receipt">×</button>
         </div>
         <p id="local-inspector-description">
-          These checks come from this browser session, not from a server claim.
+          These readings come from this browser session. Nothing here is a claim a server made
+          about itself.
         </p>
-        <dl class="proof-list">
+        <dl class="receipt-rows inspector-rows">
           <div>
-            <dt>External requests since load</dt>
-            <dd id="external-request-count">0</dd>
-          </div>
-          <div class="proof-code-row">
-            <dt>Active connection policy</dt>
-            <dd><code id="csp-connect-src">connect-src 'self'</code></dd>
+            <dt>External requests (page + worker)</dt>
+            <dd data-proof="external" data-state="pending">Checking…</dd>
           </div>
           <div>
-            <dt>Offline page control</dt>
-            <dd id="offline-control-status">Checking…</dd>
+            <dt>Connection policy</dt>
+            <dd data-proof="connect-src">connect-src 'self'</dd>
+          </div>
+          <div>
+            <dt>Worker policy</dt>
+            <dd data-proof="worker-src">worker-src 'self'</dd>
+          </div>
+          <div>
+            <dt>Page control</dt>
+            <dd data-proof="sw" data-state="pending">Checking…</dd>
           </div>
         </dl>
         <p class="proof-explanation">
-          <code>connect-src 'self'</code> allows app connections only to this static origin, blocking uploads to external services.
+          The count above covers both threads: this document and the background worker that reads
+          your file, each reporting its own request timeline. It has two blind spots — a WebSocket
+          is never recorded as a resource, and a request the policy blocks leaves no record at all
+          — which is why the policies sit next to it. <code>connect-src 'self'</code> allows
+          connections to this origin alone, and <code>worker-src 'self'</code> binds the thread
+          doing the work. There is no upload endpoint to reach.
         </p>
         <a class="source-link" href="https://github.com/mtclab/localbench" target="_blank" rel="noopener noreferrer">Read the source <span aria-hidden="true">↗</span></a>
       </div>
@@ -157,10 +171,17 @@
 
     <main>
       <section class="hero tool-panel" id="page-count-panel" data-tool-panel="page-count" aria-labelledby="page-count-title">
-        <p class="eyebrow">Private by construction</p>
+        <div class="answer" id="page-count-answer" role="status" aria-live="polite" hidden>
+          <p class="answer-file" data-answer-file></p>
+          <p class="answer-value" data-answer-value></p>
+          <p class="answer-note" data-answer-note></p>
+          <div class="answer-notices" data-answer-notices hidden></div>
+        </div>
+
+        <p class="origin-label">pdf.keeplocal.tools</p>
         <h1 id="page-count-title">Count PDF pages without uploading a thing.</h1>
         <p class="lede">
-          Your file is processed by the localbench Rust core entirely in this browser.
+          Your file is read by the keeplocal Rust core entirely in this browser.
           It never leaves your device.
         </p>
 
@@ -180,7 +201,14 @@
       </section>
 
       <section class="hero tool-panel" id="merge-panel" data-tool-panel="merge" aria-labelledby="merge-title" hidden>
-        <p class="eyebrow">Private by construction</p>
+        <div class="answer" id="merge-answer" role="status" aria-live="polite" hidden>
+          <p class="answer-file" data-answer-file></p>
+          <p class="answer-value" data-answer-value></p>
+          <p class="answer-note" data-answer-note></p>
+          <div class="answer-notices" data-answer-notices hidden></div>
+        </div>
+
+        <p class="origin-label">pdf.keeplocal.tools</p>
         <h1 id="merge-title">Merge PDFs in the order you choose.</h1>
         <p class="lede">
           Add files, arrange them, and create one PDF in the local Rust core.
@@ -202,6 +230,11 @@
             <span id="merge-summary"></span>
           </div>
           <ol class="merge-list" id="merge-list"></ol>
+          <p class="compress-scope">
+            Pages, text, and images are always carried over. Bookmarks, form fields, page
+            numbering, and accessibility tags are carried over where the source PDFs allow it —
+            anything that cannot be combined is named in the result.
+          </p>
           <button class="primary-action" id="merge-button" type="button" disabled>
             Merge PDFs
           </button>
@@ -214,7 +247,14 @@
       </section>
 
       <section class="hero tool-panel" id="organize-panel" data-tool-panel="organize" aria-labelledby="organize-title" hidden>
-        <p class="eyebrow">Private by construction</p>
+        <div class="answer" id="organize-answer" role="status" aria-live="polite" hidden>
+          <p class="answer-file" data-answer-file></p>
+          <p class="answer-value" data-answer-value></p>
+          <p class="answer-note" data-answer-note></p>
+          <div class="answer-notices" data-answer-notices hidden></div>
+        </div>
+
+        <p class="origin-label">pdf.keeplocal.tools</p>
         <h1 id="organize-title">Keep, reorder, and rotate the pages you need.</h1>
         <p class="lede">
           Choose one PDF, arrange its output pages, and export entirely in the local Rust core.
@@ -259,6 +299,11 @@
             <button class="text-action" id="reset-pages-button" type="button">Reset to all pages</button>
           </div>
           <ol class="organize-list" id="organize-list"></ol>
+          <p class="compress-scope">
+            The pages you keep are exported unchanged. Anything that describes the old page order
+            — links to removed pages, page numbering, accessibility tags — is named in the result
+            when it cannot survive the new one.
+          </p>
           <button class="primary-action" id="organize-button" type="button" disabled>
             Export organized PDF
           </button>
@@ -271,11 +316,19 @@
       </section>
 
       <section class="hero tool-panel" id="compress-panel" data-tool-panel="compress" aria-labelledby="compress-title" hidden>
-        <p class="eyebrow">Private by construction</p>
+        <div class="answer" id="compress-answer" role="status" aria-live="polite" hidden>
+          <p class="answer-file" data-answer-file></p>
+          <p class="answer-value" data-answer-value></p>
+          <p class="answer-note" data-answer-note></p>
+          <div class="answer-notices" data-answer-notices hidden></div>
+        </div>
+
+        <p class="origin-label">pdf.keeplocal.tools</p>
         <h1 id="compress-title">Compress a PDF without uploading it.</h1>
         <p class="lede">
           Re-encode supported embedded images and remove optional metadata in the local Rust core.
-          The PDF stays on this device from start to finish.
+          When no reduction is possible your original PDF comes back exactly as it was — metadata
+          included — and the result says so. The PDF stays on this device from start to finish.
         </p>
 
         <div class="drop-zone compress-drop-zone" id="compress-drop-zone">
@@ -325,6 +378,7 @@
               <div><dt>Before</dt><dd id="compress-before-size">—</dd></div>
               <div><dt>After</dt><dd id="compress-after-size">—</dd></div>
               <div><dt>Saved</dt><dd id="compress-saved-percent">—</dd></div>
+              <div><dt>Metadata</dt><dd id="compress-metadata">—</dd></div>
             </dl>
             <button class="secondary-action download-action" id="compress-download-button" type="button">
               Download compressed PDF
@@ -338,23 +392,53 @@
         </div>
       </section>
 
-      <aside class="trust-card" aria-labelledby="trust-title">
-        <p class="card-kicker">Local-only guarantee</p>
-        <h2 id="trust-title">The browser blocks uploads.</h2>
-        <p>
-          A strict Content Security Policy permits connections only to this static origin.
-          Once cached, localbench works offline too.
-        </p>
-        <dl>
-          <div><dt>Core</dt><dd id="core-version">Loading…</dd></div>
-          <div><dt>Processing</dt><dd>On this device</dd></div>
-          <div><dt>Account</dt><dd>Not needed</dd></div>
-        </dl>
+      <aside class="trust-card" aria-labelledby="receipt-title">
+        <section class="receipt">
+          <div class="receipt-head">
+            <h2 class="receipt-title" id="receipt-title">Local execution receipt</h2>
+            <span class="receipt-stamp" data-proof="stamp">—</span>
+          </div>
+          <dl class="receipt-rows">
+            <div>
+              <dt>External requests (page + worker)</dt>
+              <dd data-proof="external" data-state="pending">Checking…</dd>
+            </div>
+            <div>
+              <dt>Connection policy</dt>
+              <dd data-proof="connect-src">connect-src 'self'</dd>
+            </div>
+          <div>
+            <dt>Worker policy</dt>
+            <dd data-proof="worker-src">worker-src 'self'</dd>
+          </div>
+            <div>
+              <dt>Page control</dt>
+              <dd data-proof="sw" data-state="pending">Checking…</dd>
+            </div>
+            <div>
+              <dt>Local core</dt>
+              <dd id="core-version" data-state="pending">Loading…</dd>
+            </div>
+          </dl>
+          <div class="receipt-foot">
+            <span>Measured in this browser, not reported by a server.</span>
+            <button class="receipt-recheck" data-proof-recheck type="button">Re-check</button>
+          </div>
+        </section>
+
+        <div class="trust-note">
+          <h2>The browser blocks uploads.</h2>
+          <p>
+            A strict Content Security Policy permits connections only to this static origin.
+            Once cached, keeplocal works offline too.
+          </p>
+        </div>
       </aside>
     </main>
 
     <footer>
       <p>No uploads. No tracking. Just local tools.</p>
+      <p class="maker-mark">Built by MTC Lab</p>
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -1,15 +1,34 @@
 import "./style.css";
+import { setAnswer } from "../../shared/answer";
+import { statusFromNotices, type CoreNotice } from "../../shared/notices";
+import {
+  observeResourceTally,
+  type ResourceProofRequest,
+  type ResourceProofResponse,
+  type ResourceTally,
+} from "../../shared/resource-proof";
+
+// Started before the worker so the receipt's counter covers this document from
+// its first request. See shared/resource-proof.ts for why an observer, not
+// performance.getEntriesByType().
+const readPageResourceTally = observeResourceTally();
 
 type PageMode = "fit" | "a4" | "letter";
-type WorkerRequest = {
+type WorkerRequest =
+  | ResourceProofRequest
+  | { id: number; type: "build"; buffers: ArrayBuffer[]; page: PageMode };
+type WorkerResult = {
+  type: "built";
   id: number;
-  type: "build";
-  buffers: ArrayBuffer[];
-  page: PageMode;
+  bytes: ArrayBuffer;
+  notices: CoreNotice[];
 };
-type WorkerResult = { type: "built"; id: number; bytes: ArrayBuffer };
+
+/** Bytes never travel without the notices the core attached to them. */
+type CoreFile = { bytes: ArrayBuffer; notices: CoreNotice[] };
 type WorkerResponse =
   | { type: "ready"; version: string }
+  | ResourceProofResponse
   | WorkerResult
   | { type: "error"; id?: number; message: string };
 
@@ -34,6 +53,10 @@ const pending = new Map<
   number,
   { resolve: (result: WorkerResult) => void; reject: (reason: Error) => void }
 >();
+// Kept apart from `pending` so a receipt probe can never be mistaken for a
+// file operation, and vice versa.
+const pendingResourceProof = new Map<number, (tally: ResourceTally | null) => void>();
+let workerUnavailable = false;
 let nextRequestId = 1;
 
 worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
@@ -41,6 +64,12 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
   if (response.type === "ready") {
     onCoreReady(response.version);
+    return;
+  }
+
+  if (response.type === "resource-proof") {
+    pendingResourceProof.get(response.id)?.(response.tally);
+    pendingResourceProof.delete(response.id);
     return;
   }
 
@@ -60,11 +89,36 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
 worker.addEventListener("error", () => {
   onCoreFailed();
+  workerUnavailable = true;
   for (const request of pending.values()) {
     request.reject(new Error("The local processing worker could not start."));
   }
   pending.clear();
+  // null, never 0: a worker that cannot answer has not been shown to be quiet.
+  for (const resolve of pendingResourceProof.values()) resolve(null);
+  pendingResourceProof.clear();
 });
+
+/**
+ * Asks the worker for its own resource tally. Resolves null — not an empty
+ * tally — when the worker does not answer, so the receipt can say "unproven"
+ * instead of printing a zero it cannot stand behind.
+ */
+function requestWorkerResourceTally(timeoutMs = 1500): Promise<ResourceTally | null> {
+  if (workerUnavailable) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const id = nextRequestId++;
+    const timer = setTimeout(() => {
+      pendingResourceProof.delete(id);
+      resolve(null);
+    }, timeoutMs);
+    pendingResourceProof.set(id, (tally) => {
+      clearTimeout(timer);
+      resolve(tally);
+    });
+    worker.postMessage({ id, type: "resource-proof" } satisfies WorkerRequest);
+  });
+}
 
 function runCoreRequest(
   request: WorkerRequest,
@@ -89,13 +143,17 @@ function runCoreRequest(
   });
 }
 
-async function buildPdf(buffers: ArrayBuffer[], page: PageMode): Promise<ArrayBuffer> {
+/*
+ * Hands back a CoreFile, never a bare ArrayBuffer: there is no call shape that
+ * yields the PDF while leaving its notices behind.
+ */
+async function buildPdf(buffers: ArrayBuffer[], page: PageMode): Promise<CoreFile> {
   const id = nextRequestId++;
   const result = await runCoreRequest({ id, type: "build", buffers, page }, buffers);
   if (result.type !== "built") {
     throw new Error("The local core returned an unexpected response.");
   }
-  return result.bytes;
+  return { bytes: result.bytes, notices: result.notices };
 }
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -119,12 +177,28 @@ const createOutputSize = requiredElement<HTMLElement>("#create-output-size");
 const createDownloadButton = requiredElement<HTMLButtonElement>("#create-download-button");
 const version = requiredElement<HTMLElement>("#core-version");
 
-type StatusState = "ready" | "working" | "success" | "error";
+// "notice": succeeded, but the core reported something that contradicts the
+// page's own copy. See shared/notices.ts.
+type StatusState = "ready" | "working" | "success" | "error" | "notice";
 
 function setStatus(text: string, state: StatusState) {
   createResultText.textContent = text;
   createResult.dataset.state = state;
 }
+
+/* The answer block lives in shared/answer.ts; see the note there on why. */
+
+/* A drop zone that holds a file says which file, not "Drop images here". */
+function setDropLabel(zone: HTMLElement, title: string, detail: string, loaded: boolean) {
+  const titleSlot = zone.querySelector<HTMLElement>(".drop-title");
+  const detailSlot = zone.querySelector<HTMLElement>(".drop-detail");
+  if (titleSlot) titleSlot.textContent = title;
+  if (detailSlot) detailSlot.textContent = detail;
+  if (loaded) zone.dataset.loaded = "true";
+  else delete zone.dataset.loaded;
+}
+
+const createAnswer = requiredElement<HTMLElement>("#create-answer");
 
 let coreReady = false;
 let coreFailed = false;
@@ -136,6 +210,7 @@ function onCoreReady(coreVersion: string) {
   coreReady = true;
   coreFailed = false;
   version.textContent = `v${coreVersion}`;
+  delete version.dataset.state;
   updateControls();
 }
 
@@ -198,6 +273,7 @@ function isAcceptedImage(file: File): boolean {
 
 function resetOutput() {
   createdPdf = null;
+  setAnswer(createAnswer, null);
   createOutput.hidden = true;
   createOutputCount.textContent = "—";
   createOutputSize.textContent = "—";
@@ -274,6 +350,17 @@ function renderImages() {
   createEditor.hidden = selectedImages.length === 0;
   createTotal.textContent =
     `${selectedImages.length} ${selectedImages.length === 1 ? "image" : "images"} · ${formatFileSize(inputSize())}`;
+
+  if (selectedImages.length === 0) {
+    setDropLabel(createDropZone, "Drop images here", "or choose images from your device", false);
+  } else {
+    setDropLabel(
+      createDropZone,
+      selectedImages.length === 1 ? selectedImages[0].file.name : `${selectedImages.length} images`,
+      "Drop more images to add them",
+      true,
+    );
+  }
 
   selectedImages.forEach(({ file, previewUrl }, index) => {
     const item = document.createElement("li");
@@ -369,17 +456,27 @@ createButton.addEventListener("click", async () => {
       selectedImages.map(({ file }) => file.arrayBuffer()),
     );
     const pdf = await buildPdf(buffers, pageSize.value as PageMode);
-    createdPdf = pdf;
+    createdPdf = pdf.bytes;
     createOutputCount.textContent = String(selectedImages.length);
-    createOutputSize.textContent = formatFileSize(pdf.byteLength);
+    createOutputSize.textContent = formatFileSize(pdf.bytes.byteLength);
     createOutput.hidden = false;
-    setStatus(
-      `combined.pdf is ready — ${formatFileSize(pdf.byteLength)} with ${selectedImages.length} ${selectedImages.length === 1 ? "page" : "pages"}.`,
-      "success",
+    setAnswer(createAnswer, {
+      file: "combined.pdf",
+      value: formatFileSize(pdf.bytes.byteLength),
+      note: `${selectedImages.length} ${
+        selectedImages.length === 1 ? "page" : "pages"
+      } created on this device`,
+      notices: pdf.notices,
+    });
+    const status = statusFromNotices(
+      pdf.notices,
+      `combined.pdf is ready — ${formatFileSize(pdf.bytes.byteLength)} with ${selectedImages.length} ${selectedImages.length === 1 ? "page" : "pages"}.`,
     );
+    setStatus(status.text, status.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The PDF could not be created.";
     setStatus(message, "error");
+    setAnswer(createAnswer, null);
   } finally {
     createWorking = false;
     updateControls();
@@ -397,36 +494,90 @@ window.addEventListener("beforeunload", () => {
 const localBadge = requiredElement<HTMLButtonElement>("#local-badge");
 const localInspector = requiredElement<HTMLDialogElement>("#local-inspector");
 const inspectorClose = requiredElement<HTMLButtonElement>("#inspector-close");
-const externalRequestCount = requiredElement<HTMLElement>("#external-request-count");
-const cspConnectSrc = requiredElement<HTMLElement>("#csp-connect-src");
-const offlineControlStatus = requiredElement<HTMLElement>("#offline-control-status");
 const cspMeta = requiredElement<HTMLMetaElement>(
   'meta[http-equiv="Content-Security-Policy"]',
 );
 let inspectorReturnFocus: HTMLElement | null = null;
 
+/*
+ * The receipt. Every reading below is measured in THIS browser session — the
+ * one thing an upload-model competitor cannot print. Written to every
+ * [data-proof] slot at once so the header badge, the sidebar receipt and the
+ * dialog can never disagree.
+ */
+function writeProof(name: string, text: string, state?: "pending" | "fail") {
+  for (const slot of document.querySelectorAll<HTMLElement>(`[data-proof="${name}"]`)) {
+    slot.textContent = text;
+    if (state) slot.dataset.state = state;
+    else delete slot.dataset.state;
+  }
+}
+
+/*
+ * The request count covers BOTH globals: this document and the worker that
+ * actually holds the user's file. The worker's timeline is invisible from here,
+ * so it is asked for its own tally over the message port. Any reading that
+ * cannot be obtained is reported as unproven — never as a zero.
+ */
+async function updateExternalRequestProof(): Promise<void> {
+  const page = readPageResourceTally();
+  if (!page.measurable) {
+    writeProof("external", "Unproven — this browser does not report resource timing", "fail");
+    return;
+  }
+
+  const workerTally = await requestWorkerResourceTally();
+  if (workerTally === null) {
+    writeProof("external", "Unproven — the worker thread did not report", "fail");
+    return;
+  }
+  if (!workerTally.measurable) {
+    writeProof("external", "Unproven — the worker cannot report resource timing", "fail");
+    return;
+  }
+
+  const external = page.external.length + workerTally.external.length;
+  writeProof("external", String(external), external === 0 ? undefined : "fail");
+}
+
 function updateInspectorProof() {
-  const externalResources = performance.getEntriesByType("resource").filter((entry) => {
-    try {
-      return new URL(entry.name, location.href).origin !== location.origin;
-    } catch {
-      return true;
-    }
-  });
-  externalRequestCount.textContent = String(externalResources.length);
+  writeProof("external", "Checking page and worker…", "pending");
+  void updateExternalRequestProof();
 
   const connectDirective = cspMeta.content
     .split(";")
     .map((directive) => directive.trim())
     .find((directive) => /^connect-src(?:\s|$)/i.test(directive));
-  cspConnectSrc.textContent = connectDirective ?? "Not declared";
+  writeProof("connect-src", connectDirective ?? "Not declared", connectDirective ? undefined : "fail");
+
+  // The directive that actually covers the Web Worker: a dedicated worker
+  // inherits the owner document's policy, so this is the line that binds the
+  // thread doing the file work. The request count above cannot see it.
+  const workerDirective = cspMeta.content
+    .split(";")
+    .map((directive) => directive.trim())
+    .find((directive) => /^worker-src(?:\s|$)/i.test(directive));
+  writeProof("worker-src", workerDirective ?? "Not declared", workerDirective ? undefined : "fail");
 
   const controlled =
     "serviceWorker" in navigator && navigator.serviceWorker.controller !== null;
-  offlineControlStatus.textContent = controlled
-    ? "Yes — a service worker controls this page"
-    : "Not yet — reload once after the first visit";
+  writeProof(
+    "sw",
+    controlled ? "A service worker controls this page" : "Reload once to enable offline",
+    controlled ? undefined : "pending",
+  );
+
+  writeProof(
+    "stamp",
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  );
 }
+
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-proof-recheck]")) {
+  button.addEventListener("click", () => updateInspectorProof());
+}
+
+updateInspectorProof();
 
 function focusableInspectorElements(): HTMLElement[] {
   return Array.from(
@@ -500,7 +651,7 @@ const themeLabel = document.querySelector<HTMLSpanElement>("#theme-label");
 const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 
 function preferredTheme(): "light" | "dark" {
-  const stored = localStorage.getItem("localbench-theme");
+  const stored = localStorage.getItem("keeplocal-theme");
   if (stored === "light" || stored === "dark") return stored;
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
@@ -510,13 +661,13 @@ function applyTheme(theme: "light" | "dark") {
   themeToggle?.setAttribute("aria-pressed", String(theme === "dark"));
   themeToggle?.setAttribute("aria-label", `Use ${theme === "dark" ? "light" : "dark"} theme`);
   if (themeLabel) themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
-  if (themeColor) themeColor.content = theme === "dark" ? "#101722" : "#f5f7fb";
+  if (themeColor) themeColor.content = theme === "dark" ? "#0b120f" : "#f6f7f5";
 }
 
 applyTheme(preferredTheme());
 themeToggle?.addEventListener("click", () => {
   const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("localbench-theme", theme);
+  localStorage.setItem("keeplocal-theme", theme);
   applyTheme(theme);
 });
 

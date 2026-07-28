@@ -1,16 +1,39 @@
 import "./style.css";
+import { setAnswer } from "../../shared/answer";
+import { statusFromNotices, type CoreNotice } from "../../shared/notices";
+import {
+  observeResourceTally,
+  type ResourceProofRequest,
+  type ResourceProofResponse,
+  type ResourceTally,
+} from "../../shared/resource-proof";
+
+// Started before the worker so the receipt's counter covers this document from
+// its first request. See shared/resource-proof.ts for why an observer, not
+// performance.getEntriesByType().
+const readPageResourceTally = observeResourceTally();
 
 type ConvertTarget = "png" | "jpeg" | "webp";
 
 type WorkerRequest =
+  | ResourceProofRequest
   | { id: number; type: "resize"; bytes: ArrayBuffer; maxW: number; maxH: number; keepAspect: boolean }
   | { id: number; type: "convert"; bytes: ArrayBuffer; target: ConvertTarget }
   | { id: number; type: "compress"; bytes: ArrayBuffer; quality: number };
 
-type WorkerResult = { type: "result"; id: number; bytes: ArrayBuffer };
+type WorkerResult = {
+  type: "result";
+  id: number;
+  bytes: ArrayBuffer;
+  notices: CoreNotice[];
+};
+
+/** Bytes never travel without the notices the core attached to them. */
+type CoreFile = { bytes: ArrayBuffer; notices: CoreNotice[] };
 
 type WorkerResponse =
   | { type: "ready"; version: string }
+  | ResourceProofResponse
   | WorkerResult
   | { type: "error"; id?: number; message: string };
 
@@ -19,6 +42,10 @@ const pending = new Map<
   number,
   { resolve: (result: WorkerResult) => void; reject: (reason: Error) => void }
 >();
+// Kept apart from `pending` so a receipt probe can never be mistaken for a
+// file operation, and vice versa.
+const pendingResourceProof = new Map<number, (tally: ResourceTally | null) => void>();
+let workerUnavailable = false;
 let nextRequestId = 1;
 
 worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
@@ -26,6 +53,12 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
   if (response.type === "ready") {
     onCoreReady(response.version);
+    return;
+  }
+
+  if (response.type === "resource-proof") {
+    pendingResourceProof.get(response.id)?.(response.tally);
+    pendingResourceProof.delete(response.id);
     return;
   }
 
@@ -45,11 +78,36 @@ worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
 
 worker.addEventListener("error", () => {
   onCoreFailed();
+  workerUnavailable = true;
   for (const request of pending.values()) {
     request.reject(new Error("The local processing worker could not start."));
   }
   pending.clear();
+  // null, never 0: a worker that cannot answer has not been shown to be quiet.
+  for (const resolve of pendingResourceProof.values()) resolve(null);
+  pendingResourceProof.clear();
 });
+
+/**
+ * Asks the worker for its own resource tally. Resolves null — not an empty
+ * tally — when the worker does not answer, so the receipt can say "unproven"
+ * instead of printing a zero it cannot stand behind.
+ */
+function requestWorkerResourceTally(timeoutMs = 1500): Promise<ResourceTally | null> {
+  if (workerUnavailable) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const id = nextRequestId++;
+    const timer = setTimeout(() => {
+      pendingResourceProof.delete(id);
+      resolve(null);
+    }, timeoutMs);
+    pendingResourceProof.set(id, (tally) => {
+      clearTimeout(timer);
+      resolve(tally);
+    });
+    worker.postMessage({ id, type: "resource-proof" } satisfies WorkerRequest);
+  });
+}
 
 function runCoreRequest(
   request: WorkerRequest,
@@ -74,30 +132,34 @@ function runCoreRequest(
   });
 }
 
+/*
+ * Each of these hands back a CoreFile, never a bare ArrayBuffer: there is no
+ * call shape that yields the image while leaving its notices behind.
+ */
 async function resizeImage(
   bytes: ArrayBuffer,
   maxW: number,
   maxH: number,
   keepAspect: boolean,
-): Promise<ArrayBuffer> {
+): Promise<CoreFile> {
   const id = nextRequestId++;
   const result = await runCoreRequest(
     { id, type: "resize", bytes, maxW, maxH, keepAspect },
     [bytes],
   );
-  return result.bytes;
+  return { bytes: result.bytes, notices: result.notices };
 }
 
-async function convertImage(bytes: ArrayBuffer, target: ConvertTarget): Promise<ArrayBuffer> {
+async function convertImage(bytes: ArrayBuffer, target: ConvertTarget): Promise<CoreFile> {
   const id = nextRequestId++;
   const result = await runCoreRequest({ id, type: "convert", bytes, target }, [bytes]);
-  return result.bytes;
+  return { bytes: result.bytes, notices: result.notices };
 }
 
-async function compressImage(bytes: ArrayBuffer, quality: number): Promise<ArrayBuffer> {
+async function compressImage(bytes: ArrayBuffer, quality: number): Promise<CoreFile> {
   const id = nextRequestId++;
   const result = await runCoreRequest({ id, type: "compress", bytes, quality }, [bytes]);
-  return result.bytes;
+  return { bytes: result.bytes, notices: result.notices };
 }
 
 function requiredElement<T extends Element>(selector: string): T {
@@ -162,7 +224,9 @@ const compressDownloadButton = requiredElement<HTMLButtonElement>("#compress-dow
 
 const version = requiredElement<HTMLElement>("#core-version");
 
-type StatusState = "ready" | "working" | "success" | "error";
+// "notice": succeeded, but the core reported something that contradicts the
+// page's own copy. See shared/notices.ts.
+type StatusState = "ready" | "working" | "success" | "error" | "notice";
 
 function setStatus(
   result: HTMLDivElement,
@@ -186,11 +250,28 @@ function setCompressStatus(text: string, state: StatusState) {
   setStatus(compressResult, compressResultText, text, state);
 }
 
+/* The answer block lives in shared/answer.ts; see the note there on why. */
+
+/* A drop zone that holds a file says which file, not "Drop an image here". */
+function setDropLabel(zone: HTMLElement, title: string, detail: string, loaded: boolean) {
+  const titleSlot = zone.querySelector<HTMLElement>(".drop-title");
+  const detailSlot = zone.querySelector<HTMLElement>(".drop-detail");
+  if (titleSlot) titleSlot.textContent = title;
+  if (detailSlot) detailSlot.textContent = detail;
+  if (loaded) zone.dataset.loaded = "true";
+  else delete zone.dataset.loaded;
+}
+
+const resizeAnswer = requiredElement<HTMLElement>("#resize-answer");
+const convertAnswer = requiredElement<HTMLElement>("#convert-answer");
+const compressAnswer = requiredElement<HTMLElement>("#compress-answer");
+
 let coreFailed = false;
 
 function onCoreReady(coreVersion: string) {
   coreFailed = false;
   version.textContent = `v${coreVersion}`;
+  delete version.dataset.state;
   updateResizeControls();
   updateConvertControls();
   updateCompressControls();
@@ -413,6 +494,7 @@ function showResizeSourcePreview() {
 function resetResizeOutput(restoreSource = true) {
   if (resizeProcessed) URL.revokeObjectURL(resizeProcessed.previewUrl);
   resizeProcessed = null;
+  setAnswer(resizeAnswer, null);
   resizeOutput.hidden = true;
   resizeOutputDimensions.textContent = "—";
   resizeOutputSize.textContent = "—";
@@ -444,6 +526,7 @@ async function processResizeFile(file: File) {
     resizePreviewDetail.textContent = preview.dimensions
       ? `Source preview · ${formatDimensions(preview.dimensions)}`
       : "Preview unavailable; the local core will still validate the image bytes.";
+    setDropLabel(resizeDropZone, file.name, "Drop another image to resize it", true);
     setResizeStatus(
       preview.dimensions
         ? `${file.name} is ready — ${formatDimensions(preview.dimensions)}, ${formatFileSize(file.size)}.`
@@ -506,10 +589,10 @@ resizeButton.addEventListener("click", async () => {
       maxH,
       resizeKeepAspect.checked,
     );
-    const format = detectEncodedFormat(resized);
+    const format = detectEncodedFormat(resized.bytes);
     const info = FORMAT_INFO[format];
     const filename = outputFilename(resizeSource.file, "resized", format);
-    const previewBlob = new Blob([resized], { type: info.mime });
+    const previewBlob = new Blob([resized.bytes], { type: info.mime });
     const previewUrl = URL.createObjectURL(previewBlob);
     const preview = await showPreview(
       resizePreview,
@@ -520,7 +603,7 @@ resizeButton.addEventListener("click", async () => {
     const dimensions = preview.dimensions;
 
     resizeProcessed = {
-      bytes: resized,
+      bytes: resized.bytes,
       filename,
       mime: info.mime,
       previewUrl,
@@ -528,7 +611,7 @@ resizeButton.addEventListener("click", async () => {
       dimensions,
     };
     resizeOutputDimensions.textContent = dimensions ? formatDimensions(dimensions) : "Preview unavailable";
-    resizeOutputSize.textContent = formatFileSize(resized.byteLength);
+    resizeOutputSize.textContent = formatFileSize(resized.bytes.byteLength);
     resizeOutput.hidden = false;
     resizePreviewDetail.textContent = dimensions
       ? `Resized preview · ${formatDimensions(dimensions)}`
@@ -544,13 +627,27 @@ resizeButton.addEventListener("click", async () => {
       : dimensions
         ? `Resized to ${formatDimensions(dimensions)}`
         : "The resized image is ready";
-    setResizeStatus(
-      `${outcome} — ${formatFileSize(resized.byteLength)}. Location/EXIF metadata was removed.`,
-      "success",
+    setAnswer(resizeAnswer, {
+      file: filename,
+      value: dimensions
+        ? `${dimensions.width} × ${dimensions.height}`
+        : formatFileSize(resized.bytes.byteLength),
+      note: dimensions
+        ? `${formatFileSize(resized.bytes.byteLength)}, EXIF removed — ${
+            keptOriginalSize ? "already within your limits" : "resized"
+          } on this device`
+        : `${formatFileSize(resized.bytes.byteLength)}, EXIF removed — resized on this device`,
+      notices: resized.notices,
+    });
+    const resizeStatus = statusFromNotices(
+      resized.notices,
+      `${outcome} — ${formatFileSize(resized.bytes.byteLength)}. Location/EXIF metadata was removed.`,
     );
+    setResizeStatus(resizeStatus.text, resizeStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The image could not be resized.";
     setResizeStatus(message, "error");
+    setAnswer(resizeAnswer, null);
   } finally {
     resizeWorking = false;
     updateResizeControls();
@@ -598,6 +695,7 @@ function showConvertSourcePreview() {
 function resetConvertOutput(restoreSource = true) {
   if (convertProcessed) URL.revokeObjectURL(convertProcessed.previewUrl);
   convertProcessed = null;
+  setAnswer(convertAnswer, null);
   convertOutput.hidden = true;
   convertOutputFormat.textContent = "—";
   convertOutputDimensions.textContent = "—";
@@ -634,6 +732,7 @@ async function processConvertFile(file: File) {
     convertPreviewDetail.textContent = preview.dimensions
       ? `Source preview · ${formatDimensions(preview.dimensions)}`
       : "Preview unavailable; the local core will still validate the image bytes.";
+    setDropLabel(convertDropZone, file.name, "Drop another image to convert it", true);
     setConvertStatus(
       preview.dimensions
         ? `${file.name} is ready — ${formatDimensions(preview.dimensions)}, ${formatFileSize(file.size)}.`
@@ -677,11 +776,11 @@ convertButton.addEventListener("click", async () => {
 
   try {
     const converted = await convertImage(await convertSource.file.arrayBuffer(), target);
-    const format = detectEncodedFormat(converted);
+    const format = detectEncodedFormat(converted.bytes);
     if (format !== target) throw new Error("The local core returned an unexpected target format.");
     const info = FORMAT_INFO[format];
     const filename = outputFilename(convertSource.file, "converted", format);
-    const previewBlob = new Blob([converted], { type: info.mime });
+    const previewBlob = new Blob([converted.bytes], { type: info.mime });
     const previewUrl = URL.createObjectURL(previewBlob);
     const preview = await showPreview(
       convertPreview,
@@ -692,7 +791,7 @@ convertButton.addEventListener("click", async () => {
     const dimensions = preview.dimensions;
 
     convertProcessed = {
-      bytes: converted,
+      bytes: converted.bytes,
       filename,
       mime: info.mime,
       previewUrl,
@@ -701,18 +800,28 @@ convertButton.addEventListener("click", async () => {
     };
     convertOutputFormat.textContent = info.label;
     convertOutputDimensions.textContent = dimensions ? formatDimensions(dimensions) : "Preview unavailable";
-    convertOutputSize.textContent = formatFileSize(converted.byteLength);
+    convertOutputSize.textContent = formatFileSize(converted.bytes.byteLength);
     convertOutput.hidden = false;
     convertPreviewDetail.textContent = dimensions
       ? `Converted ${info.label} preview · ${formatDimensions(dimensions)}`
       : `The converted ${info.label} is ready, but this browser could not preview it.`;
-    setConvertStatus(
-      `${info.label} ready — ${formatFileSize(converted.byteLength)}. Location/EXIF metadata was removed.`,
-      "success",
+    setAnswer(convertAnswer, {
+      file: filename,
+      value: formatFileSize(converted.bytes.byteLength),
+      note: dimensions
+        ? `${info.label}, ${formatDimensions(dimensions)}, EXIF removed — converted on this device`
+        : `${info.label}, EXIF removed — converted on this device`,
+      notices: converted.notices,
+    });
+    const convertStatus = statusFromNotices(
+      converted.notices,
+      `${info.label} ready — ${formatFileSize(converted.bytes.byteLength)}. Location/EXIF metadata was removed.`,
     );
+    setConvertStatus(convertStatus.text, convertStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The image could not be converted.";
     setConvertStatus(message, "error");
+    setAnswer(convertAnswer, null);
   } finally {
     convertWorking = false;
     updateConvertControls();
@@ -756,10 +865,12 @@ function showCompressSourcePreview() {
 function resetCompressOutput(restoreSource = true) {
   if (compressedImage) URL.revokeObjectURL(compressedImage.previewUrl);
   compressedImage = null;
+  setAnswer(compressAnswer, null);
   compressOutput.hidden = true;
   compressBeforeSize.textContent = "—";
   compressAfterSize.textContent = "—";
   compressSavedPercent.textContent = "—";
+  compressDownloadButton.textContent = "Download compressed image";
   if (restoreSource) showCompressSourcePreview();
   updateCompressControls();
 }
@@ -788,6 +899,7 @@ async function processCompressFile(file: File) {
     compressPreviewDetail.textContent = preview.dimensions
       ? `Source preview · ${formatDimensions(preview.dimensions)}`
       : "Preview unavailable; the local core will still validate the image bytes.";
+    setDropLabel(compressDropZone, file.name, "Drop another image to compress it", true);
     setCompressStatus(
       preview.dimensions
         ? `${file.name} is ready — ${formatDimensions(preview.dimensions)}, ${formatFileSize(file.size)}.`
@@ -832,16 +944,27 @@ compressButton.addEventListener("click", async () => {
   try {
     const beforeBytes = compressSource.file.size;
     const compressed = await compressImage(await compressSource.file.arrayBuffer(), quality);
-    const format = detectEncodedFormat(compressed);
+    const format = detectEncodedFormat(compressed.bytes);
     if (format !== "jpeg" && format !== "png") {
       throw new Error("The local core returned an unexpected compressed image format.");
     }
     const info = FORMAT_INFO[format];
-    const filename = outputFilename(compressSource.file, "compressed", format);
-    const afterBytes = compressed.byteLength;
+    /*
+     * A file named "…-compressed.png" that is byte-for-byte the input is a lie
+     * told in the one place the notice cannot follow: the user's downloads
+     * folder, read weeks later. When the core hands the original back, the
+     * download keeps the original name.
+     */
+    const returnedUnchanged = compressed.notices.some(
+      (notice) => notice.code === "image-returned-unchanged",
+    );
+    const filename = returnedUnchanged
+      ? compressSource.file.name
+      : outputFilename(compressSource.file, "compressed", format);
+    const afterBytes = compressed.bytes.byteLength;
     const savedBytes = Math.max(0, beforeBytes - afterBytes);
     const savedPercent = beforeBytes === 0 ? 0 : (savedBytes / beforeBytes) * 100;
-    const previewBlob = new Blob([compressed], { type: info.mime });
+    const previewBlob = new Blob([compressed.bytes], { type: info.mime });
     const previewUrl = URL.createObjectURL(previewBlob);
     const preview = await showPreview(
       compressPreview,
@@ -852,29 +975,48 @@ compressButton.addEventListener("click", async () => {
     const dimensions = preview.dimensions;
 
     compressedImage = {
-      bytes: compressed,
+      bytes: compressed.bytes,
       filename,
       mime: info.mime,
       previewUrl,
       displayUrl: preview.displayUrl,
       dimensions,
     };
+    // Nothing was re-encoded and nothing was stripped, so neither the copy nor
+    // the answer may say it was.
     compressBeforeSize.textContent = formatFileSize(beforeBytes);
     compressAfterSize.textContent = formatFileSize(afterBytes);
     compressSavedPercent.textContent = `${savedPercent.toFixed(1)}% (${formatFileSize(savedBytes)})`;
     compressOutput.hidden = false;
     compressPreviewDetail.textContent = dimensions
-      ? `Compressed preview · ${formatDimensions(dimensions)}`
-      : "The compressed file is ready, but this browser could not preview it.";
-    setCompressStatus(
+      ? `${returnedUnchanged ? "Your original file" : "Compressed preview"} · ${formatDimensions(dimensions)}`
+      : returnedUnchanged
+        ? "Your original file is ready, but this browser could not preview it."
+        : "The compressed file is ready, but this browser could not preview it.";
+    compressDownloadButton.textContent = returnedUnchanged
+      ? "Download your original image"
+      : "Download compressed image";
+    setAnswer(compressAnswer, {
+      file: filename,
+      value: savedBytes > 0 ? `−${savedPercent.toFixed(1)}%` : formatFileSize(afterBytes),
+      note: returnedUnchanged
+        ? `${formatFileSize(afterBytes)} — your original file, returned as it was`
+        : savedBytes > 0
+          ? `${formatFileSize(beforeBytes)} → ${formatFileSize(afterBytes)}, compressed on this device`
+          : `No smaller encoding found — ${formatFileSize(afterBytes)} re-encoded on this device`,
+      notices: compressed.notices,
+    });
+    const compressStatus = statusFromNotices(
+      compressed.notices,
       savedBytes > 0
         ? `Compressed image ready — saved ${savedPercent.toFixed(1)}%. Location/EXIF metadata was removed.`
         : "No smaller encoding was found, so the file stayed at its original size. Location/EXIF metadata was removed.",
-      "success",
     );
+    setCompressStatus(compressStatus.text, compressStatus.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The image could not be compressed.";
     setCompressStatus(message, "error");
+    setAnswer(compressAnswer, null);
   } finally {
     compressWorking = false;
     updateCompressControls();
@@ -889,9 +1031,9 @@ compressDownloadButton.addEventListener("click", () => {
 
 type Tool = "resize" | "convert" | "compress";
 const TOOL_TITLES: Record<Tool, string> = {
-  resize: "Resize Images — localbench",
-  convert: "Convert Images — localbench",
-  compress: "Compress Images — localbench",
+  resize: "Resize Images — keeplocal",
+  convert: "Convert Images — keeplocal",
+  compress: "Compress Images — keeplocal",
 };
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-tool]"));
 const toolPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-panel]"));
@@ -975,36 +1117,90 @@ restoreToolFromHash();
 const localBadge = requiredElement<HTMLButtonElement>("#local-badge");
 const localInspector = requiredElement<HTMLDialogElement>("#local-inspector");
 const inspectorClose = requiredElement<HTMLButtonElement>("#inspector-close");
-const externalRequestCount = requiredElement<HTMLElement>("#external-request-count");
-const cspConnectSrc = requiredElement<HTMLElement>("#csp-connect-src");
-const offlineControlStatus = requiredElement<HTMLElement>("#offline-control-status");
 const cspMeta = requiredElement<HTMLMetaElement>(
   'meta[http-equiv="Content-Security-Policy"]',
 );
 let inspectorReturnFocus: HTMLElement | null = null;
 
+/*
+ * The receipt. Every reading below is measured in THIS browser session — the
+ * one thing an upload-model competitor cannot print. Written to every
+ * [data-proof] slot at once so the header badge, the sidebar receipt and the
+ * dialog can never disagree.
+ */
+function writeProof(name: string, text: string, state?: "pending" | "fail") {
+  for (const slot of document.querySelectorAll<HTMLElement>(`[data-proof="${name}"]`)) {
+    slot.textContent = text;
+    if (state) slot.dataset.state = state;
+    else delete slot.dataset.state;
+  }
+}
+
+/*
+ * The request count covers BOTH globals: this document and the worker that
+ * actually holds the user's file. The worker's timeline is invisible from here,
+ * so it is asked for its own tally over the message port. Any reading that
+ * cannot be obtained is reported as unproven — never as a zero.
+ */
+async function updateExternalRequestProof(): Promise<void> {
+  const page = readPageResourceTally();
+  if (!page.measurable) {
+    writeProof("external", "Unproven — this browser does not report resource timing", "fail");
+    return;
+  }
+
+  const workerTally = await requestWorkerResourceTally();
+  if (workerTally === null) {
+    writeProof("external", "Unproven — the worker thread did not report", "fail");
+    return;
+  }
+  if (!workerTally.measurable) {
+    writeProof("external", "Unproven — the worker cannot report resource timing", "fail");
+    return;
+  }
+
+  const external = page.external.length + workerTally.external.length;
+  writeProof("external", String(external), external === 0 ? undefined : "fail");
+}
+
 function updateInspectorProof() {
-  const externalResources = performance.getEntriesByType("resource").filter((entry) => {
-    try {
-      return new URL(entry.name, location.href).origin !== location.origin;
-    } catch {
-      return true;
-    }
-  });
-  externalRequestCount.textContent = String(externalResources.length);
+  writeProof("external", "Checking page and worker…", "pending");
+  void updateExternalRequestProof();
 
   const connectDirective = cspMeta.content
     .split(";")
     .map((directive) => directive.trim())
     .find((directive) => /^connect-src(?:\s|$)/i.test(directive));
-  cspConnectSrc.textContent = connectDirective ?? "Not declared";
+  writeProof("connect-src", connectDirective ?? "Not declared", connectDirective ? undefined : "fail");
+
+  // The directive that actually covers the Web Worker: a dedicated worker
+  // inherits the owner document's policy, so this is the line that binds the
+  // thread doing the file work. The request count above cannot see it.
+  const workerDirective = cspMeta.content
+    .split(";")
+    .map((directive) => directive.trim())
+    .find((directive) => /^worker-src(?:\s|$)/i.test(directive));
+  writeProof("worker-src", workerDirective ?? "Not declared", workerDirective ? undefined : "fail");
 
   const controlled =
     "serviceWorker" in navigator && navigator.serviceWorker.controller !== null;
-  offlineControlStatus.textContent = controlled
-    ? "Yes — a service worker controls this page"
-    : "Not yet — reload once after the first visit";
+  writeProof(
+    "sw",
+    controlled ? "A service worker controls this page" : "Reload once to enable offline",
+    controlled ? undefined : "pending",
+  );
+
+  writeProof(
+    "stamp",
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  );
 }
+
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-proof-recheck]")) {
+  button.addEventListener("click", () => updateInspectorProof());
+}
+
+updateInspectorProof();
 
 function focusableInspectorElements(): HTMLElement[] {
   return Array.from(
@@ -1083,7 +1279,7 @@ const themeLabel = document.querySelector<HTMLSpanElement>("#theme-label");
 const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 
 function preferredTheme(): "light" | "dark" {
-  const stored = localStorage.getItem("localbench-theme");
+  const stored = localStorage.getItem("keeplocal-theme");
   if (stored === "light" || stored === "dark") return stored;
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
@@ -1093,13 +1289,13 @@ function applyTheme(theme: "light" | "dark") {
   themeToggle?.setAttribute("aria-pressed", String(theme === "dark"));
   themeToggle?.setAttribute("aria-label", `Use ${theme === "dark" ? "light" : "dark"} theme`);
   if (themeLabel) themeLabel.textContent = theme === "dark" ? "Light" : "Dark";
-  if (themeColor) themeColor.content = theme === "dark" ? "#101722" : "#f5f7fb";
+  if (themeColor) themeColor.content = theme === "dark" ? "#0b120f" : "#f6f7f5";
 }
 
 applyTheme(preferredTheme());
 themeToggle?.addEventListener("click", () => {
   const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("localbench-theme", theme);
+  localStorage.setItem("keeplocal-theme", theme);
   applyTheme(theme);
 });
 

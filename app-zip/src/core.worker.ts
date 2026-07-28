@@ -1,5 +1,10 @@
 /// <reference lib="webworker" />
 
+import {
+  observeResourceTally,
+  type ResourceProofRequest,
+  type ResourceProofResponse,
+} from "../../shared/resource-proof";
 import init, {
   core_version,
   create_zip,
@@ -8,6 +13,7 @@ import init, {
 } from "./wasm/localbench_core.js";
 
 type WorkerRequest =
+  | ResourceProofRequest
   | { id: number; type: "createZip"; names: string[]; buffers: ArrayBuffer[] }
   | { id: number; type: "listZip"; bytes: ArrayBuffer }
   | { id: number; type: "extractEntry"; bytes: ArrayBuffer; index: number };
@@ -19,6 +25,23 @@ type WorkerResponse =
   | { type: "error"; id?: number; message: string };
 
 const scope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
+
+/*
+ * The receipt reads this thread, not just the page. Registered BEFORE the WASM
+ * init await below so the page still gets a truthful reading when the core
+ * fails to load — a silent worker would otherwise be indistinguishable from a
+ * worker that made zero requests.
+ */
+const readResourceTally = observeResourceTally();
+
+scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
+  if (event.data?.type !== "resource-proof") return;
+  scope.postMessage({
+    type: "resource-proof",
+    id: event.data.id,
+    tally: readResourceTally(),
+  } satisfies ResourceProofResponse);
+});
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -34,6 +57,8 @@ try {
 
 scope.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
+  // Answered by the receipt listener above; never a core operation.
+  if (request.type === "resource-proof") return;
 
   try {
     if (request.type === "createZip") {

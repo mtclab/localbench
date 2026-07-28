@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+/>
+<title>Privacy — keeplocal</title>
+<meta name="description" content="keeplocal collects no personal data, sets no cookies, and runs no analytics. The tools process your files entirely in your browser." />
+<meta name="theme-color" content="#f6f7f5" />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<link rel="canonical" href="https://keeplocal.tools/privacy" />
+<link rel="stylesheet" href="/identity.css" />
+<link rel="stylesheet" href="/site.css" />
+<script src="/site.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="site-header landing-header">
+    <div class="brand-cluster">
+      <a class="brand" href="/" aria-label="keeplocal home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M8.75 3.75H4.75v16.5h4" />
+            <path d="M15.25 3.75h4v16.5h-4" />
+            <rect x="9.9" y="9.9" width="4.2" height="4.2" fill="currentColor" stroke="none" />
+          </svg>
+        </span>
+        <span>keeplocal</span>
+      </a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Use dark theme" aria-pressed="false">
+      <span id="theme-label">Dark</span>
+    </button>
+  </header>
+
+  <main class="prose">
+    <p class="origin-label">keeplocal.tools/privacy</p>
+    <h1>Privacy</h1>
+
+    <p>
+      <strong>keeplocal.tools</strong> is the front page for a family of file tools built on one
+      promise: your files never leave your device.
+    </p>
+
+    <p>
+      This page collects no personal data, requires no account, sets no cookies, and runs no
+      analytics or third-party trackers. The only thing stored in your browser is your light or
+      dark theme preference, in <code>localStorage</code>, which never leaves your device.
+    </p>
+
+    <p>
+      The tools do their work in your browser over WebAssembly — the files you open are read,
+      processed and handed back locally. They are never uploaded, because there is no server to
+      upload them to. Every tool ships a strict <code>connect-src 'self'</code> policy, so the page
+      cannot open a connection to anywhere else even if it tried.
+    </p>
+
+    <p>
+      Each tool is open source, so this is verifiable rather than a promise. Read the code, watch
+      the network panel, or unplug your connection and see the tools keep working. Source lives at
+      <a href="https://github.com/mtclab/localbench" rel="noopener">github.com/mtclab/localbench</a>.
+    </p>
+
+    <p class="muted">
+      Questions? <a href="mailto:contact@mtclab.net">contact@mtclab.net</a>
+    </p>
+  </main>
+
+  <footer>
+    <nav>
+      <a href="/">← keeplocal</a><a href="https://github.com/mtclab/localbench" rel="noopener">Source</a>
+    </nav>
+    <p class="maker-mark">Built by <a href="https://mtclab.net" rel="noopener">MTC Lab</a></p>
+  </footer>
+
+</div>
+</body>
+</html>
