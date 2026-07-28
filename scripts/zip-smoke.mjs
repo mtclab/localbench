@@ -130,26 +130,70 @@ check(await page.isVisible("text=Unsafe path"), "slip.zip flags a zip-slip entry
 let secret = null;
 try { secret = await readFile(path.join(CORPUS, "secret.zip")); } catch { /* CLI absent */ }
 if (secret) {
-  // The reject may surface at LIST time or at EXTRACT time depending on the core;
-  // accept either. Load, and if entries render, click one to force extraction.
-  await page.setInputFiles("#extract-file-input", { name: "secret.zip", mimeType: "application/zip", buffer: secret });
-  await page.waitForTimeout(1500);
-  const encBtn = await page.$("#extract-entry-table button");
-  if (encBtn) await encBtn.click().catch(() => {});
-  await page.waitForFunction(
-    () => /password/i.test(document.querySelector("#extract-result-text")?.textContent ?? ""),
-    { timeout: 15000 },
-  ).catch(() => {});
-  const encMsg = ((await page.textContent("#extract-result-text").catch(() => "")) ?? "").trim();
-  check(/password/i.test(encMsg), `encrypted archive is rejected with a password message ("${encMsg}")`);
+  /*
+   * The reject is REPORTED at list time, not discovered by clicking: the core
+   * marks an encrypted entry unextractable, so its action cell renders a
+   * `.entry-blocked` status label ("Password-protected") INSTEAD of a Download
+   * button, and the archive-wide "About this archive" note above the list says
+   * why. Assert both, against the real markup - the old assertion clicked a
+   * per-row button that no longer exists and grepped #extract-result-text for
+   * the word "password", so it could only ever go green by accident.
+   *
+   * The wait is on the blocked label itself: no earlier archive in this run
+   * produces one (a zip-slip entry is flagged unsafe but still extractable),
+   * so it cannot match a previous zip's leftover render.
+   */
+  await loadExtract("secret.zip", secret, "#extract-entry-table .entry-blocked");
+  const enc = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#extract-entry-table > [role='row']")]
+      .filter((row) => row.querySelector(".file-order")); // drop the column header
+    const row = rows.find((r) => r.querySelector(".file-actions .entry-blocked")) ?? rows[0];
+    const action = row?.querySelector(".file-actions");
+    const warnings = document.querySelector("#extract-warnings");
+    return {
+      rows: rows.length,
+      name: row?.querySelector(".file-details .file-name")?.textContent?.trim() ?? "",
+      label: action?.querySelector(".entry-blocked")?.textContent?.trim() ?? "",
+      offersDownload: !!action?.querySelector("button"),
+      noteShown: warnings instanceof HTMLElement && !warnings.hidden,
+      noteTitle: warnings?.querySelector(".notices-title")?.textContent?.trim() ?? "",
+      notes: [...document.querySelectorAll("#extract-warning-list > li.notice")]
+        .map((li) => (li.textContent ?? "").trim()),
+    };
+  });
+  const rowIsBlocked = enc.label === "Password-protected" && !enc.offersDownload;
+  const noteExplains = enc.noteShown && enc.notes.some((t) => /password-protected/i.test(t));
+  check(
+    rowIsBlocked && noteExplains,
+    `secret.zip: entry "${enc.name}" carries the "${enc.label}" status label instead of a download button` +
+      `, and the "${enc.noteTitle}" note explains it ("${enc.notes.join(" | ")}")`,
+  );
 } else {
   console.log(`  SKIP  [${ENGINE}] secret.zip not in corpus (zip CLI absent at build)`);
+}
+
+/*
+ * The inspector fills the external-request counter ASYNCHRONOUSLY: opening it
+ * paints a pending placeholder ("Checking page and worker…") and writes the
+ * number only once the worker has answered over the message port with its own
+ * tally. Reading the slot straight after the click is a race that reports the
+ * placeholder as a failure - a harness bug, not a product one. Wait for the
+ * counter to SETTLE (a number, or a fail-marked verdict like "Unproven — …")
+ * and assert on that, so a genuinely non-zero count still fails this gate.
+ */
+async function readSettledExternalProof() {
+  await page.waitForFunction(() => {
+    const slot = document.querySelector('[data-proof="external"]');
+    if (!slot) return false;
+    return /^\d+$/.test((slot.textContent ?? "").trim()) || slot.dataset.state === "fail";
+  }, { timeout: 5000 }).catch(() => {});
+  return ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
 }
 
 // --- 6) provable-local badge + inspector ---
 await page.click("#local-badge");
 check(await page.isVisible("#local-inspector"), "privacy inspector opens from the badge");
-const netCount = ((await page.textContent('[data-proof="external"]').catch(() => "")) ?? "").trim();
+const netCount = await readSettledExternalProof();
 check(netCount === "0", `inspector external-request counter reads 0 (got "${netCount}")`);
 await page.keyboard.press("Escape");
 check(!(await page.isVisible("#local-inspector")), "inspector closes on Escape");
@@ -164,18 +208,30 @@ check(before !== after && (after === "light" || after === "dark"), `theme toggle
 check(external.length === 0, `zero external network requests (found ${external.length}${external.length ? ": " + external.slice(0, 5).join(", ") : ""})`);
 // Cloudflare injects an inline JavaScript-Detections loader
 // (cdn-cgi/challenge-platform/scripts/jsd/main.js) zone-wide. Our strict CSP
-// (no 'unsafe-inline') BLOCKS it by design — that is the moat working, not our
-// bug: these apps ship zero inline executable scripts, so any "inline script
-// violates CSP" error can only be a third-party injection. Treat that exact
-// violation as expected; still surface the count so it never hides a real one.
-// Engine-agnostic: Chromium ("inline script violates ... Content Security Policy
-// directive 'script-src'"), Firefox ("Content-Security-Policy: ... blocked an
-// inline script (script-src-elem)"), and WebKit ("Refused to execute a script ...
-// script-src directive of the Content Security Policy") all word it differently.
+// (no 'unsafe-inline') BLOCKS it by design - that is the moat working, not our
+// bug: these apps ship zero inline executable scripts, so an INLINE-EXECUTION
+// block can only be a third-party injection. Treat that exact violation as
+// expected; still surface the count so it never hides a real one.
+//
+// Engine-agnostic on the inline wording: Chromium ("Executing inline script
+// violates the following Content Security Policy directive 'script-src ...'",
+// older builds "Refused to execute inline script"), Firefox ("blocked an
+// inline script (script-src-elem)", newer "blocked the execution of an inline
+// script"), WebKit ("Refused to execute a script because its hash, its nonce,
+// or 'unsafe-inline' does not appear in the script-src directive").
+//
+// NOT excused: a blocked EXTERNAL script ("Refused to load the script
+// 'https://...' ... script-src"). CSP stops it before the request, so the
+// zero-external-request check above cannot see it either - a shipped external
+// script tag is exactly what this suite exists to catch, so it must fail the
+// console gate. scripts/smoke-harness.test.mjs holds that line.
 const isExpectedCspBlock = (m) =>
   /content[-\s]security[-\s]policy/i.test(m) &&
   /script-src/i.test(m) &&
-  /(inline script|refused to execute|blocked an inline|violates)/i.test(m);
+  (/(?:executing|refused to execute)(?: an?)? inline script/i.test(m) ||
+    /blocked (?:an|the execution of an) inline script/i.test(m) ||
+    /refused to execute a script/i.test(m)) &&
+  !/(?:refused to load|blocked the loading of)/i.test(m);
 const expectedCspBlocks = consoleErrors.filter(isExpectedCspBlock);
 const functionalConsoleErrors = consoleErrors.filter((m) => !isExpectedCspBlock(m));
 if (expectedCspBlocks.length) {

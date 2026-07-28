@@ -1,4 +1,4 @@
-.PHONY: build wasm test site check-local check-notices
+.PHONY: build wasm test site check-local check-notices check-smokes
 
 APPS = app app-img app-img2pdf app-scrub app-zip
 
@@ -53,6 +53,15 @@ check-local:
 #     node notice-proof.mjs'
 check-notices:
 	node --test scripts/notice-plumbing.test.mjs
+
+# The gate on the live smoke harness. The five browser smokes must fail for
+# PRODUCT reasons and nothing else, so this proves - without a browser or a
+# network - that all five still carry the same expected-CSP-block filter, that
+# the filter excuses exactly Cloudflare's injected inline script (all three
+# engine wordings) and NOTHING else, and that the asynchronous privacy-inspector
+# counter is read only after it settles instead of the instant it is opened.
+check-smokes:
+	node --test scripts/smoke-harness.test.mjs
 
 # Assembles site/dist: the landing page plus the canonical shared/identity.css.
 site:
