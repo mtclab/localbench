@@ -18,8 +18,10 @@ const siteDir = path.join(repoRoot, "site");
 const distDir = path.join(siteDir, "dist");
 const identityCss = path.join(repoRoot, "shared", "identity.css");
 
-// Everything in site/ except the build output itself.
-const sources = ["index.html", "privacy.html", "site.css", "site.js", "icon.svg", "_headers"];
+// Everything in site/ except the build output itself. 404.html makes Cloudflare
+// Pages answer 404 for unknown paths instead of the SPA-fallback 200 index
+// (estate live-walk 2026-07-28 finding; scripts/site-smoke.mjs gates it live).
+const sources = ["index.html", "privacy.html", "404.html", "site.css", "site.js", "icon.svg", "_headers"];
 
 await rm(distDir, { recursive: true, force: true });
 await mkdir(distDir, { recursive: true });

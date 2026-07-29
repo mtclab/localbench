@@ -1,4 +1,4 @@
-.PHONY: build wasm test site check-local check-notices check-smokes
+.PHONY: build wasm test site check-local check-notices check-smokes check-site-live
 
 APPS = app app-img app-img2pdf app-scrub app-zip
 
@@ -66,4 +66,10 @@ check-smokes:
 # Assembles site/dist: the landing page plus the canonical shared/identity.css.
 site:
 	node scripts/build-site.mjs
+
+# Live smoke over the deployed landing (plain fetch, runs anywhere). Includes
+# the Pages soft-404 gate: unknown paths must answer 404, not the 200 index.
+# Run after every keeplocal-site deploy.
+check-site-live:
+	node scripts/site-smoke.mjs
 
